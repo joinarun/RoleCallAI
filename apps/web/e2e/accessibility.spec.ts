@@ -58,3 +58,25 @@ test("admin and participant entry surfaces are WCAG AA clean", async ({ page, re
   await expect(page.getByText("LOBBY", { exact: true })).toBeVisible();
   await expectWcagClean(page);
 });
+
+test("private home workspace is WCAG AA clean and responsive", async ({ page, request }, testInfo) => {
+  const created = await createRoom(
+    request,
+    `Workspace accessibility ${testInfo.project.name} ${Date.now()}`,
+  );
+
+  await page.goto("/");
+  await page.evaluate((room) => {
+    sessionStorage.setItem(`rolecall-links:${room.room.id}`, JSON.stringify(room));
+  }, created);
+  await page.reload();
+
+  await expect(page.getByRole("heading", { name: /rooms, people and outcomes/i })).toBeVisible();
+  await expect(page.getByRole("heading", { name: created.room.name, exact: true })).toBeVisible();
+  await expect(page.locator(".dashboard-seat")).toHaveCount(2);
+  const fitsViewport = await page.evaluate(
+    () => document.documentElement.scrollWidth <= window.innerWidth,
+  );
+  expect(fitsViewport).toBeTruthy();
+  await expectWcagClean(page);
+});

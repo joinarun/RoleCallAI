@@ -1,6 +1,6 @@
 import { Routes, Route, Link } from "react-router-dom";
 import { AudioLines } from "lucide-react";
-import { CreateRoomPage } from "./pages/CreateRoomPage";
+import { HomePage } from "./pages/HomePage";
 import { AdminRoomPage } from "./pages/AdminRoomPage";
 import { JoinRoomPage } from "./pages/JoinRoomPage";
 
@@ -22,7 +22,7 @@ export default function App() {
       </header>
       <main id="main-content" tabIndex={-1}>
         <Routes>
-          <Route path="/" element={<CreateRoomPage />} />
+          <Route path="/" element={<HomePage />} />
           <Route path="/manage/:roomId" element={<AdminRoomPage />} />
           <Route path="/join/:roomId" element={<JoinRoomPage />} />
           <Route path="*" element={<div className="empty-state"><h1>That room isn’t here.</h1><Link className="button primary" to="/">Create a room</Link></div>} />

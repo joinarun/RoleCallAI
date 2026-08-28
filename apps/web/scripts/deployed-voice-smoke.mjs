@@ -53,6 +53,22 @@ async function launchParticipant(audioPath) {
   return { browser, context, page: await context.newPage() };
 }
 
+async function seedAndVerifyDashboard(page, created) {
+  await page.goto("/");
+  await page.evaluate((room) => {
+    sessionStorage.setItem(`rolecall-links:${room.room.id}`, JSON.stringify(room));
+  }, created);
+  await page.reload();
+  await page.getByRole("heading", { name: /rooms, people and outcomes/i }).waitFor({
+    timeout: 20_000,
+  });
+  await page.getByRole("heading", { name: created.room.name, exact: true }).waitFor();
+  if ((await page.locator(".dashboard-seat").count()) !== created.room.expectedParticipants) {
+    throw new Error("Home workspace did not render every persistent participant seat");
+  }
+  await page.getByRole("link", { name: /manage room/i }).waitFor();
+}
+
 async function joinParticipant(page, seatUrl, roomId, roomName, name, runDeviceCheck = true) {
   await page.goto(seatUrl);
   await page.getByRole("heading", { name: /sound good/i }).waitFor({ timeout: 20_000 });
@@ -145,6 +161,7 @@ try {
 
   firstParticipant = await launchParticipant(firstAudio);
   secondParticipant = await launchParticipant(secondAudio);
+  await seedAndVerifyDashboard(firstParticipant.page, created);
   const firstJoin = await joinParticipant(
     firstParticipant.page,
     created.seatUrls[0].url,
@@ -243,6 +260,18 @@ try {
   await waitForIdle();
   const naturalClosingSeconds = (Date.now() - naturalClosingStartedAt) / 1000;
 
+  await firstParticipant.page.getByRole("heading", { name: "Meeting summary" }).waitFor({
+    timeout: 30_000,
+  });
+  for (const label of ["Date", "Time", "Duration", "Audio quality", "MEETING SUMMARY"]) {
+    await firstParticipant.page.getByText(label, { exact: true }).waitFor();
+  }
+  await firstParticipant.page.getByRole("link", { name: /return to home workspace/i }).click();
+  await firstParticipant.page.getByRole("heading", { name: /rooms, people and outcomes/i }).waitFor();
+  await waitUntil("home workspace meeting history", async () => {
+    return (await firstParticipant.page.locator(".workspace-history-row").count()) === 1;
+  }, 30_000, 1_000);
+
   const leaveJoin = await joinParticipant(
     firstParticipant.page,
     `${baseURL}/join/${roomId}`,
@@ -304,6 +333,8 @@ try {
       participantLeave: true,
       delegatedParticipantEnd: true,
       rememberedMicrophone: true,
+      homeWorkspace: true,
+      completionMetadata: true,
       adminEnd: true,
       cleanup: "smoke room deleted",
     }),

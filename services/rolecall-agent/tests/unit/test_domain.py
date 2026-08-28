@@ -105,9 +105,16 @@ def test_room_update_normalizes_game_and_revokes_removed_seat_sessions(
 
     updated = container.rooms.update(
         created.room.id,
-        RoomPatch(role=RoleType.SCRUM_MASTER, expected_participants=2),
+        RoomPatch(
+            role=RoleType.SCRUM_MASTER,
+            expected_participants=2,
+            duration_minutes=30,
+            agent_name="Nova Prime",
+        ),
     )
     assert updated.room.game is None
+    assert updated.room.duration_minutes == 30
+    assert updated.room.agent_name == "Nova Prime"
     with pytest.raises(UnauthorizedError):
         container.capabilities.authenticate(removed_cookie)
     with pytest.raises(ValueError, match="Fun Friday"):

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { CheckCircle2, Clock3, Hand, LoaderCircle, LogOut, Mic, MicOff, Octagon, Radio, Sparkles, Users } from "lucide-react";
+import type { ReactNode } from "react";
+import { CalendarDays, CheckCircle2, Clock3, Gauge, Hand, Home, LoaderCircle, LogOut, Mic, MicOff, Octagon, Radio, Sparkles, Timer, Users } from "lucide-react";
 import { api, jsonBody } from "../lib/api";
 import { useLiveMeeting } from "../hooks/useLiveMeeting";
 import type { JoinResponse, Recap } from "../types";
@@ -8,6 +9,20 @@ import { StatusBadge } from "./StatusBadge";
 function formatClock(seconds: number) {
   const value = Math.max(0, seconds);
   return `${String(Math.floor(value / 60)).padStart(2, "0")}:${String(value % 60).padStart(2, "0")}`;
+}
+
+function formatMeetingDuration(seconds: number) {
+  const minutes = Math.floor(seconds / 60);
+  const remainder = seconds % 60;
+  return minutes ? `${minutes}m ${String(remainder).padStart(2, "0")}s` : `${remainder}s`;
+}
+
+function audioQualitySummary(quality: string, mediaError: string) {
+  if (mediaError || quality === "lost") return { value: "Needs attention", detail: "A connection or device issue was detected", tone: "poor" };
+  if (quality === "poor") return { value: "Fair", detail: "Some network instability was detected", tone: "fair" };
+  if (quality === "excellent") return { value: "Excellent", detail: "LiveKit reported a strong media connection", tone: "excellent" };
+  if (quality === "good") return { value: "Good", detail: "LiveKit reported a stable media connection", tone: "good" };
+  return { value: "Not measured", detail: "No quality warning was reported", tone: "unknown" };
 }
 
 export function MeetingSurface({ join }: { join: JoinResponse }) {
@@ -120,7 +135,14 @@ export function MeetingSurface({ join }: { join: JoinResponse }) {
   }
 
   if (recap) {
-    return <section className="meeting-complete"><div className="complete-mark"><CheckCircle2 /></div><p className="eyebrow mint">Meeting complete</p><h1>Clear words. Concrete next steps.</h1><p className="recap-summary">{recap.summary}</p><div className="recap-grid"><RecapGroup title="Decisions" values={recap.decisions} /><RecapGroup title="Actions" values={recap.actions.map((item) => item.text)} /><RecapGroup title="Blockers" values={recap.blockers} /><RecapGroup title="Ideas" values={recap.ideas} /></div></section>;
+    const meetingStart = new Date(live.occurrence.startedAt ?? live.occurrence.createdAt);
+    const meetingEnd = live.occurrence.endedAt ? new Date(live.occurrence.endedAt) : meetingStart;
+    const actualDurationSeconds = Math.max(
+      0,
+      Math.round((meetingEnd.getTime() - meetingStart.getTime()) / 1000),
+    );
+    const quality = audioQualitySummary(live.audioQuality, live.mediaError);
+    return <section className="meeting-complete recap-complete"><div className="complete-mark"><CheckCircle2 /></div><p className="eyebrow mint">Meeting complete</p><h1>Meeting summary</h1><p className="completion-room-name">{join.roomName} · facilitated by {join.agentName}</p><div className="recap-meta-grid"><SummaryMetric icon={<CalendarDays />} label="Date" value={meetingStart.toLocaleDateString(undefined, { dateStyle: "medium" })} detail={meetingStart.toLocaleDateString(undefined, { weekday: "long" })} /><SummaryMetric icon={<Clock3 />} label="Time" value={meetingStart.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })} detail="Meeting start" /><SummaryMetric icon={<Timer />} label="Duration" value={formatMeetingDuration(actualDurationSeconds)} detail={`${roomDuration} min scheduled`} /><SummaryMetric icon={<Gauge />} label="Audio quality" value={quality.value} detail={quality.detail} tone={quality.tone} /></div><div className="recap-overview"><small>MEETING SUMMARY</small><p className="recap-summary">{recap.summary}</p></div><div className="recap-grid"><RecapGroup title="Decisions" values={recap.decisions} /><RecapGroup title="Actions" values={recap.actions.map((item) => item.text)} /><RecapGroup title="Blockers" values={recap.blockers} /><RecapGroup title="Ideas" values={recap.ideas} /></div><a className="button primary recap-home" href="/"><Home /> Return to home workspace</a></section>;
   }
 
   return (
@@ -143,4 +165,8 @@ function AudioBars() {
 
 function RecapGroup({ title, values }: { title: string; values: string[] }) {
   return <div><small>{title.toUpperCase()}</small>{values.length ? <ul>{values.map((value) => <li key={value}>{value}</li>)}</ul> : <p>None recorded.</p>}</div>;
+}
+
+function SummaryMetric({ icon, label, value, detail, tone = "" }: { icon: ReactNode; label: string; value: string; detail: string; tone?: string }) {
+  return <div className={`recap-meta-card ${tone}`}><span>{icon}</span><div><small>{label}</small><strong>{value}</strong><p>{detail}</p></div></div>;
 }

@@ -39,10 +39,7 @@ class CapabilityService:
         self, room_id: str, token: str, now: datetime | None = None
     ) -> tuple[str, CapabilityClaims]:
         timestamp = now or datetime.now(UTC)
-        digest = sha256_digest(token)
-        record = self.repository.find_capability(digest)
-        if record is None or not hmac.compare_digest(record.room_id, room_id):
-            raise UnauthorizedError("Invalid or revoked capability")
+        record = self.verify_token(room_id, token)
 
         raw_session_id = secrets.token_urlsafe(32)
         claims = CapabilityClaims(
@@ -63,6 +60,24 @@ class CapabilityService:
         )
         cookie = self.serializer.dumps({"sid": raw_session_id})
         return cookie, claims
+
+    def verify_token(
+        self,
+        room_id: str,
+        token: str,
+        required_kind: CapabilityKind | None = None,
+    ) -> CapabilityRecord:
+        """Validate a raw link capability without creating or replacing a cookie session."""
+
+        digest = sha256_digest(token)
+        record = self.repository.find_capability(digest)
+        if (
+            record is None
+            or not hmac.compare_digest(record.room_id, room_id)
+            or (required_kind is not None and record.kind != required_kind)
+        ):
+            raise UnauthorizedError("Invalid or revoked capability")
+        return record
 
     def authenticate(self, cookie: str | None, now: datetime | None = None) -> CapabilityClaims:
         if not cookie:

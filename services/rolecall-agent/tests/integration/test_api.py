@@ -24,6 +24,56 @@ def exchange(client: TestClient, room_id: str, url: str) -> None:
     assert response.status_code == 200, response.text
 
 
+def capability_token(url: str) -> str:
+    return url.split("#cap=", 1)[1]
+
+
+def test_dashboard_resolves_only_admin_links_supplied_by_the_browser(
+    container: Container,
+) -> None:
+    with TestClient(app) as client:
+        app.state.container = container
+        first = client.post("/v1/rooms", json=room_payload("Dashboard one")).json()
+        second = client.post("/v1/rooms", json=room_payload("Dashboard two")).json()
+        response = client.post(
+            "/v1/dashboard/rooms",
+            json={
+                "rooms": [
+                    {
+                        "roomId": first["room"]["id"],
+                        "token": capability_token(first["adminUrl"]),
+                    },
+                    {
+                        "roomId": second["room"]["id"],
+                        "token": capability_token(second["adminUrl"]),
+                    },
+                ]
+            },
+        )
+        assert response.status_code == 200, response.text
+        assert [item["room"]["name"] for item in response.json()["rooms"]] == [
+            "Dashboard one",
+            "Dashboard two",
+        ]
+        assert response.json()["unavailableRoomIds"] == []
+        assert capability_token(first["adminUrl"]) not in response.text
+
+        seat_is_not_admin = client.post(
+            "/v1/dashboard/rooms",
+            json={
+                "rooms": [
+                    {
+                        "roomId": first["room"]["id"],
+                        "token": capability_token(first["seatUrls"][0]["url"]),
+                    }
+                ]
+            },
+        )
+        assert seat_is_not_admin.status_code == 200
+        assert seat_is_not_admin.json()["rooms"] == []
+        assert seat_is_not_admin.json()["unavailableRoomIds"] == [first["room"]["id"]]
+
+
 def test_end_to_end_capability_room_and_join_flow(container: Container) -> None:
     with TestClient(app) as client:
         app.state.container = container

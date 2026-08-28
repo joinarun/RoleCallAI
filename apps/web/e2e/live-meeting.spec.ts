@@ -163,7 +163,7 @@ test("two synthetic-mic participants receive floor, captions, and recap", async 
         payload: processingState,
       }),
     );
-    await expect(firstPage.getByRole("heading", { name: "Clear words. Concrete next steps." })).toBeVisible({ timeout: 8_000 });
+    await expect(firstPage.getByRole("heading", { name: "Meeting summary" })).toBeVisible({ timeout: 8_000 });
     await expect(firstPage.getByText(recap.summary)).toBeVisible();
   } finally {
     await firstContext.close();

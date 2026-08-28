@@ -22,7 +22,7 @@ try {
   });
   const desktopPage = await desktop.newPage();
   await desktopPage.goto("/");
-  await desktopPage.getByRole("heading", { name: /give every meeting/i }).waitFor();
+  await desktopPage.getByRole("heading", { name: /let ai lead/i }).waitFor();
   await desktopPage.screenshot({ path: resolve(outputDir, "create-desktop.png"), fullPage: true });
 
   const roomResponse = await desktopPage.request.post(`${apiBase}/v1/rooms`, {
@@ -42,6 +42,34 @@ try {
   }
   const created = await roomResponse.json();
 
+  await desktopPage.evaluate((room) => {
+    sessionStorage.setItem(`rolecall-links:${room.room.id}`, JSON.stringify(room));
+  }, created);
+  await desktopPage.goto("/");
+  await desktopPage.getByRole("heading", { name: /rooms, people and outcomes/i }).waitFor();
+  await desktopPage.getByRole("heading", { name: created.room.name }).waitFor();
+  await desktopPage.screenshot({
+    path: resolve(outputDir, "home-workspace-desktop.png"),
+    fullPage: true,
+  });
+  const mobileDashboard = await browser.newContext({
+    baseURL: webBase,
+    viewport: { width: 390, height: 844 },
+    isMobile: true,
+    hasTouch: true,
+  });
+  const mobileDashboardPage = await mobileDashboard.newPage();
+  await mobileDashboardPage.goto("/");
+  await mobileDashboardPage.evaluate((room) => {
+    sessionStorage.setItem(`rolecall-links:${room.room.id}`, JSON.stringify(room));
+  }, created);
+  await mobileDashboardPage.reload();
+  await mobileDashboardPage.getByRole("heading", { name: /rooms, people and outcomes/i }).waitFor();
+  await mobileDashboardPage.screenshot({
+    path: resolve(outputDir, "home-workspace-mobile.png"),
+    fullPage: true,
+  });
+  await mobileDashboard.close();
   await desktopPage.goto(created.adminUrl);
   await desktopPage.getByText("Room is idle").waitFor();
   await desktopPage.screenshot({

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, jsonBody } from "./api";
+import { rememberSeat, storedCapabilityToken } from "./linkVault";
 
 const fragmentTokens = new Map<string, string>();
 
@@ -7,6 +8,12 @@ type CapabilityState =
   | { status: "exchanging" }
   | { status: "ready"; scope: "ADMIN" | "SEAT"; slotId?: string }
   | { status: "error"; message: string };
+
+type CapabilitySession = {
+  roomId: string;
+  scope: "ADMIN" | "SEAT";
+  slotId?: string;
+};
 
 export function useCapability(roomId: string, expectedScope: "ADMIN" | "SEAT"): CapabilityState {
   const [state, setState] = useState<CapabilityState>({ status: "exchanging" });
@@ -19,28 +26,42 @@ export function useCapability(roomId: string, expectedScope: "ADMIN" | "SEAT"): 
       fragmentTokens.set(roomId, fragmentToken);
       history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
     }
-    const token = fragmentToken ?? fragmentTokens.get(roomId) ?? null;
+    const token =
+      fragmentToken ??
+      fragmentTokens.get(roomId) ??
+      storedCapabilityToken(roomId, expectedScope);
+
+    function accept(session: CapabilitySession) {
+      if (session.roomId !== roomId || session.scope !== expectedScope) {
+        throw new Error("The current private link belongs to a different room.");
+      }
+      if (session.scope === "SEAT" && session.slotId) rememberSeat(roomId, session.slotId);
+      if (!cancelled) setState({ status: "ready", ...session });
+    }
+
+    async function exchangeToken(capabilityToken: string) {
+      const session = await api<CapabilitySession>("/v1/capability-sessions", {
+        method: "POST",
+        ...jsonBody({ roomId, token: capabilityToken }),
+      });
+      fragmentTokens.delete(roomId);
+      accept(session);
+    }
 
     async function exchange() {
       try {
         if (token) {
-          const session = await api<{ scope: "ADMIN" | "SEAT"; slotId?: string }>(
-            "/v1/capability-sessions",
-            { method: "POST", ...jsonBody({ roomId, token }) },
-          );
-          if (!cancelled) {
-            fragmentTokens.delete(roomId);
-            setState({ status: "ready", ...session });
-          }
+          await exchangeToken(token);
           return;
         }
-        const session = await api<{ scope: "ADMIN" | "SEAT"; slotId?: string }>(
-          "/v1/capability-sessions/current",
-        );
-        if (!cancelled) setState({ status: "ready", ...session });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "This capability link is invalid or expired.";
-        if (!cancelled) setState({ status: "error", message });
+        accept(await api<CapabilitySession>("/v1/capability-sessions/current"));
+      } catch {
+        if (!cancelled) {
+          setState({
+            status: "error",
+            message: "Open the original private link or choose the room from your home workspace.",
+          });
+        }
       }
     }
     void exchange();

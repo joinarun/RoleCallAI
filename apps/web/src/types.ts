@@ -93,6 +93,29 @@ export interface RoomCreated {
   seatUrls: Array<{ slotId: string; url: string }>;
 }
 
+export interface HistoryItem {
+  occurrenceId: string;
+  number: number;
+  status: OccurrenceStatus;
+  createdAt: string;
+  startedAt?: string | null;
+  endedAt?: string | null;
+  recap?: Recap | null;
+  participants: string[];
+  durationSeconds?: number | null;
+}
+
+export interface DashboardRoomItem {
+  room: Room;
+  currentOccurrence?: Occurrence | null;
+  history: HistoryItem[];
+}
+
+export interface DashboardRoomsResponse {
+  rooms: DashboardRoomItem[];
+  unavailableRoomIds: string[];
+}
+
 export interface JoinResponse {
   occurrence: Occurrence;
   livekitUrl: string;

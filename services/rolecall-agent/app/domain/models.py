@@ -391,6 +391,30 @@ class HistoryItem(DomainModel):
     started_at: datetime | None
     ended_at: datetime | None
     recap: MeetingRecap | None
+    participants: list[str] = Field(default_factory=list)
+    duration_seconds: int | None = None
+
+
+class DashboardRoomCredential(DomainModel):
+    room_id: str
+    token: Annotated[str, Field(min_length=32, max_length=512)]
+
+
+class DashboardRoomsRequest(DomainModel):
+    rooms: Annotated[list[DashboardRoomCredential], Field(max_length=50)] = Field(
+        default_factory=list
+    )
+
+
+class DashboardRoomItem(DomainModel):
+    room: RoomView
+    current_occurrence: Occurrence | None = None
+    history: list[HistoryItem] = Field(default_factory=list)
+
+
+class DashboardRoomsResponse(DomainModel):
+    rooms: list[DashboardRoomItem] = Field(default_factory=list)
+    unavailable_room_ids: list[str] = Field(default_factory=list)
 
 
 class LiveKitMessage(DomainModel):

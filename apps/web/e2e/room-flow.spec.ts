@@ -40,6 +40,14 @@ test("admin creates a private room and opens its management view", async ({ page
   await expect(page.getByRole("button", { name: /can end/i }).first()).toHaveAttribute("aria-pressed", "true");
   await page.getByRole("button", { name: /history/i }).click();
   await expect(page.getByRole("heading", { name: /meetings and outcomes/i })).toBeVisible();
+
+  await page.getByRole("link", { name: /rolecallai home/i }).click();
+  await expect(page.getByRole("heading", { name: /rooms, people and outcomes/i })).toBeVisible();
+  await expect(page.getByRole("heading", { name, exact: true })).toBeVisible();
+  await expect(page.getByText("Pixel Prime · Fun Friday")).toBeVisible();
+  await expect(page.locator(".dashboard-seat")).toHaveCount(3);
+  await expect(page.getByRole("link", { name: /manage room/i })).toBeVisible();
+  await expect(page.getByRole("button", { name: /copy admin link/i })).toBeVisible();
 });
 
 test("seat fragment is removed, synthetic microphone works, and duplicate seat is rejected", async ({

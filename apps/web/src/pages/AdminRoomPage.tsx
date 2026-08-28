@@ -19,26 +19,18 @@ import { CapabilityBoundary } from "../components/CapabilityBoundary";
 import { CopyButton } from "../components/CopyButton";
 import { StatusBadge } from "../components/StatusBadge";
 import { api, jsonBody } from "../lib/api";
+import { loadRoomLinks, removeRoomLinks, saveRoomLinks } from "../lib/linkVault";
 import { ROLE_PRESET_BY_ID, ROLE_PRESETS } from "../rolePresets";
 import type {
   GameType,
+  HistoryItem,
   Occurrence,
-  Recap,
   RoleType,
   Room,
   RoomCreated,
 } from "../types";
 
 type Tab = "overview" | "settings" | "history";
-type HistoryItem = {
-  occurrenceId: string;
-  number: number;
-  status: Occurrence["status"];
-  createdAt: string;
-  startedAt?: string;
-  endedAt?: string;
-  recap?: Recap;
-};
 type RoomUpdated = {
   room: Room;
   newSeatUrls: Array<{ slotId: string; url: string }>;
@@ -65,15 +57,6 @@ function settingsFromRoom(room: Room): SettingsDraft {
   };
 }
 
-function loadStoredLinks(roomId: string): RoomCreated | null {
-  try {
-    const saved = sessionStorage.getItem(`rolecall-links:${roomId}`);
-    return saved ? (JSON.parse(saved) as RoomCreated) : null;
-  } catch {
-    return null;
-  }
-}
-
 function AdminContent({ roomId }: { roomId: string }) {
   const navigate = useNavigate();
   const [room, setRoom] = useState<Room | null>(null);
@@ -87,7 +70,7 @@ function AdminContent({ roomId }: { roomId: string }) {
   const [deleting, setDeleting] = useState(false);
   const [ending, setEnding] = useState(false);
   const [permissionBusy, setPermissionBusy] = useState<string | null>(null);
-  const [links, setLinks] = useState<RoomCreated | null>(() => loadStoredLinks(roomId));
+  const [links, setLinks] = useState<RoomCreated | null>(() => loadRoomLinks(roomId));
 
   const refresh = useCallback(async () => {
     try {
@@ -127,7 +110,7 @@ function AdminContent({ roomId }: { roomId: string }) {
         adminUrl: currentLinks?.adminUrl ?? "",
         seatUrls: [...merged.values()],
       };
-      sessionStorage.setItem(`rolecall-links:${roomId}`, JSON.stringify(next));
+      saveRoomLinks(next);
       return next;
     });
   }
@@ -220,7 +203,7 @@ function AdminContent({ roomId }: { roomId: string }) {
     setError("");
     try {
       await api<void>(`/v1/rooms/${roomId}`, { method: "DELETE" });
-      sessionStorage.removeItem(`rolecall-links:${roomId}`);
+      removeRoomLinks(roomId);
       await api<void>("/v1/capability-sessions", { method: "DELETE" }).catch(() => undefined);
       navigate("/", { replace: true });
     } catch (reason) {
@@ -287,10 +270,10 @@ function AdminContent({ roomId }: { roomId: string }) {
           <form className="panel settings-form" onSubmit={(event) => void saveSettings(event)}>
             <div className="panel-title"><div><span className="panel-icon indigo-bg"><Settings2 /></span><div><small>ROOM CONFIGURATION</small><h2>Facilitator and timing</h2></div></div></div>
             {current && <p className="panel-note">Settings are locked while Meeting {current.number} is {current.status.toLowerCase()}.</p>}
-            <div className="field-grid"><label>Room name<input required maxLength={100} disabled={Boolean(current)} value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></label><label>Agent name<input required maxLength={60} disabled={Boolean(current)} value={draft.agentName} onChange={(event) => setDraft({ ...draft, agentName: event.target.value })} /></label></div>
-            <div className="field-grid"><label>Participants<select disabled={Boolean(current)} value={draft.expectedParticipants} onChange={(event) => setDraft({ ...draft, expectedParticipants: Number(event.target.value) })}>{Array.from({ length: 9 }, (_, index) => index + 2).map((count) => <option key={count} value={count}>{count} people</option>)}</select></label><label>Duration<select disabled={Boolean(current)} value={draft.durationMinutes} onChange={(event) => setDraft({ ...draft, durationMinutes: Number(event.target.value) })}>{[5, 10, 15, 20, 30, 45, 60].map((minutes) => <option key={minutes} value={minutes}>{minutes} minutes</option>)}</select></label></div>
-            <div className="field-grid"><label>Role<select disabled={Boolean(current)} value={draft.role} onChange={(event) => { const role = event.target.value as RoleType; setDraft({ ...draft, role, instructions: ROLE_PRESET_BY_ID[role].prompt }); }}>{ROLE_PRESETS.map((preset) => <option key={preset.id} value={preset.id}>{preset.title}</option>)}</select></label>{draft.role === "FUN_FRIDAY" ? <label>Game<select aria-label="Game" disabled={Boolean(current)} value={draft.game} onChange={(event) => setDraft({ ...draft, game: event.target.value as GameType })}><option value="AUTO">Auto</option><option value="RAPID_FIRE_TRIVIA">Rapid-fire trivia</option><option value="WOULD_YOU_RATHER">Would You Rather</option><option value="CATEGORIES">Categories</option></select></label> : <div />}</div>
-            <label>How should the agent run it?<textarea aria-label="How should the agent run it?" maxLength={8000} rows={6} disabled={Boolean(current)} value={draft.instructions} onChange={(event) => setDraft({ ...draft, instructions: event.target.value })} /></label>
+            <div className="field-grid"><label>Room name<input required maxLength={100} disabled={Boolean(current)} value={draft.name} onChange={(event) => setDraft((value) => value ? { ...value, name: event.target.value } : value)} /></label><label>Agent name<input required maxLength={60} disabled={Boolean(current)} value={draft.agentName} onChange={(event) => setDraft((value) => value ? { ...value, agentName: event.target.value } : value)} /></label></div>
+            <div className="field-grid"><label>Participants<select disabled={Boolean(current)} value={draft.expectedParticipants} onChange={(event) => setDraft((value) => value ? { ...value, expectedParticipants: Number(event.target.value) } : value)}>{Array.from({ length: 9 }, (_, index) => index + 2).map((count) => <option key={count} value={count}>{count} people</option>)}</select></label><label>Duration<select disabled={Boolean(current)} value={draft.durationMinutes} onChange={(event) => setDraft((value) => value ? { ...value, durationMinutes: Number(event.target.value) } : value)}>{[5, 10, 15, 20, 30, 45, 60].map((minutes) => <option key={minutes} value={minutes}>{minutes} minutes</option>)}</select></label></div>
+            <div className="field-grid"><label>Role<select disabled={Boolean(current)} value={draft.role} onChange={(event) => { const role = event.target.value as RoleType; setDraft((value) => value ? { ...value, role, instructions: ROLE_PRESET_BY_ID[role].prompt } : value); }}>{ROLE_PRESETS.map((preset) => <option key={preset.id} value={preset.id}>{preset.title}</option>)}</select></label>{draft.role === "FUN_FRIDAY" ? <label>Game<select aria-label="Game" disabled={Boolean(current)} value={draft.game} onChange={(event) => setDraft((value) => value ? { ...value, game: event.target.value as GameType } : value)}><option value="AUTO">Auto</option><option value="RAPID_FIRE_TRIVIA">Rapid-fire trivia</option><option value="WOULD_YOU_RATHER">Would You Rather</option><option value="CATEGORIES">Categories</option></select></label> : <div />}</div>
+            <label>How should the agent run it?<textarea aria-label="How should the agent run it?" maxLength={8000} rows={6} disabled={Boolean(current)} value={draft.instructions} onChange={(event) => setDraft((value) => value ? { ...value, instructions: event.target.value } : value)} /></label>
             <div className="settings-actions"><button type="button" className="button ghost" disabled={Boolean(current) || saving} onClick={() => setDraft(settingsFromRoom(room))}>Discard changes</button><button className="button primary" disabled={Boolean(current) || saving}>{saving ? <LoaderCircle className="spin" /> : <Save size={17} />} Save settings</button></div>
           </form>
 

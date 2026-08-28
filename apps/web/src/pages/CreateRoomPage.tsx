@@ -2,6 +2,7 @@ import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { AlertTriangle, ArrowLeft, ArrowRight, Brain, CalendarClock, Check, ClipboardList, Code2, Gamepad2, GraduationCap, Lightbulb, Link2, ListChecks, LockKeyhole, Megaphone, Scale, Search, Sparkles, Users, Wrench } from "lucide-react";
 import { api, jsonBody } from "../lib/api";
+import { saveRoomLinks } from "../lib/linkVault";
 import type { GameType, RoleType, RoomCreated } from "../types";
 import { CopyButton } from "../components/CopyButton";
 import { ROLE_PRESET_BY_ID, ROLE_PRESETS } from "../rolePresets";
@@ -44,7 +45,13 @@ const defaultDraft: Draft = {
   game: "AUTO",
 };
 
-export function CreateRoomPage() {
+export function CreateRoomPage({
+  onRoomCreated,
+  onShowWorkspace,
+}: {
+  onRoomCreated?: (room: RoomCreated) => void;
+  onShowWorkspace?: () => void;
+} = {}) {
   const [step, setStep] = useState(1);
   const [draft, setDraft] = useState(defaultDraft);
   const [created, setCreated] = useState<RoomCreated | null>(null);
@@ -86,7 +93,8 @@ export function CreateRoomPage() {
           game: draft.role === "FUN_FRIDAY" ? draft.game : null,
         }),
       });
-      sessionStorage.setItem(`rolecall-links:${result.room.id}`, JSON.stringify(result));
+      saveRoomLinks(result);
+      onRoomCreated?.(result);
       setCreated(result);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Could not create this room.");
@@ -103,14 +111,15 @@ export function CreateRoomPage() {
           <div className="vault-header"><div><LockKeyhole /><span>One-time link vault</span></div><span className="badge pending">Not recoverable</span></div>
           <div className="link-row admin-link"><div><small>ADMIN MANAGEMENT LINK</small><strong>Controls room settings and history</strong></div><CopyButton value={created.adminUrl} /></div>
           <div className="seat-link-grid">{created.seatUrls.map((seat, index) => <div className="seat-link" key={seat.slotId}><span className="seat-number">{String(index + 1).padStart(2, "0")}</span><div><small>PARTICIPANT SEAT</small><strong>Invite {index + 1}</strong></div><CopyButton value={seat.url} label="Copy" /></div>)}</div>
-          <button className="button primary wide" onClick={() => navigate(new URL(created.adminUrl).pathname + new URL(created.adminUrl).hash)}><span>Open admin room</span><ArrowRight size={18} /></button>
+          <div className="success-actions"><button className="button primary wide" onClick={() => navigate(new URL(created.adminUrl).pathname + new URL(created.adminUrl).hash)}><span>Open admin room</span><ArrowRight size={18} /></button>{onShowWorkspace && <button className="button ghost wide" onClick={onShowWorkspace}>View home workspace</button>}</div>
         </div>
       </section>
     );
   }
 
   return (
-    <section className={`create-layout ${step > 1 ? "focused" : ""}`}>
+    <><section className={`create-layout ${step > 1 ? "focused" : ""}`}>
+      {onShowWorkspace && <button className="workspace-back" type="button" onClick={onShowWorkspace}><ArrowLeft size={16} /> Back to workspace</button>}
       {step === 1 && <div className="hero-copy">
         <p className="eyebrow"><span /> RoleCallAI</p>
         <h1>Let AI Lead the<br /><em>Conversation Forward.</em></h1>
@@ -138,6 +147,6 @@ export function CreateRoomPage() {
         <div className="wizard-actions">{step > 1 ? <button type="button" className="button ghost" onClick={() => setStep((value) => value - 1)}><ArrowLeft size={18} /> Back</button> : <span />}<button className="button primary" disabled={busy || (step === 1 && !draft.name.trim())}>{busy ? "Creating…" : step === 3 ? <><Link2 size={18} /> Create private room</> : <>Continue <ArrowRight size={18} /></>}</button></div>
         <p className="retention-note">By creating a room, you acknowledge live Gemini processing and 90-day meeting retention.</p>
       </form>
-    </section>
+    </section></>
   );
 }

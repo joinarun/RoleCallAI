@@ -73,7 +73,9 @@ class RoomService:
         if self.repository.get_active_occurrence(room_id):
             raise ConflictError("Room settings can only change while the room is idle")
 
-        updates = patch.model_dump(exclude_none=True)
+        # Service logic works with Python field names. DomainModel serializes API
+        # responses with camelCase aliases, so opt out of aliases for mutation data.
+        updates = patch.model_dump(exclude_none=True, by_alias=False)
         new_seat_urls: list[dict[str, str]] = []
         if "name" in updates:
             room.name = clean_display_text(str(updates["name"]), max_length=100)

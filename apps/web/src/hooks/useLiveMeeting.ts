@@ -1,15 +1,29 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Room as LiveKitRoom, RoomEvent, Track, type RemoteTrack } from "livekit-client";
+import {
+  ConnectionQuality,
+  Room as LiveKitRoom,
+  RoomEvent,
+  Track,
+  type RemoteTrack,
+} from "livekit-client";
 import { api, jsonBody } from "../lib/api";
 import type { Caption, JoinResponse, LiveMessage, Occurrence, Recap } from "../types";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+const qualityRank: Record<ConnectionQuality, number> = {
+  [ConnectionQuality.Unknown]: -1,
+  [ConnectionQuality.Excellent]: 0,
+  [ConnectionQuality.Good]: 1,
+  [ConnectionQuality.Poor]: 2,
+  [ConnectionQuality.Lost]: 3,
+};
 
 export function useLiveMeeting(join: JoinResponse) {
   const roomRef = useRef<LiveKitRoom | null>(null);
   const allowRecoveryRef = useRef(true);
   const wantsMicRef = useRef(true);
+  const worstQualityRef = useRef<ConnectionQuality>(ConnectionQuality.Unknown);
   const [connection, setConnection] = useState<"connecting" | "connected" | "reconnecting" | "disconnected">("connecting");
   const [occurrence, setOccurrence] = useState(join.occurrence);
   const [captions, setCaptions] = useState<Caption[]>([]);
@@ -17,7 +31,18 @@ export function useLiveMeeting(join: JoinResponse) {
   const [micEnabled, setMicEnabled] = useState(false);
   const [micAllowed, setMicAllowed] = useState(false);
   const [mediaError, setMediaError] = useState("");
+  const [audioQuality, setAudioQuality] = useState<ConnectionQuality>(ConnectionQuality.Unknown);
   const [left, setLeft] = useState(false);
+
+  const noteAudioQuality = useCallback((quality: ConnectionQuality) => {
+    if (
+      quality !== ConnectionQuality.Unknown &&
+      qualityRank[quality] > qualityRank[worstQualityRef.current]
+    ) {
+      worstQualityRef.current = quality;
+      setAudioQuality(quality);
+    }
+  }, []);
 
   useEffect(() => {
     const room = new LiveKitRoom({ adaptiveStream: true, dynacast: false });
@@ -37,6 +62,7 @@ export function useLiveMeeting(join: JoinResponse) {
           setMediaError("");
         }).catch(() => {
           setMicEnabled(false);
+          noteAudioQuality(ConnectionQuality.Poor);
           setMediaError("Your microphone is unavailable. Check browser permission, then unmute.");
         });
       }
@@ -93,14 +119,17 @@ export function useLiveMeeting(join: JoinResponse) {
             // Retry with bounded backoff; state polling still provides recap access.
           }
         }
-        if (!disposed) setConnection("disconnected");
+        if (!disposed) {
+          setConnection("disconnected");
+          noteAudioQuality(ConnectionQuality.Lost);
+        }
       } finally {
         recovering = false;
       }
     }
 
     room.on(RoomEvent.Connected, () => { setConnection("connected"); syncPermission(); });
-    room.on(RoomEvent.Reconnecting, () => setConnection("reconnecting"));
+    room.on(RoomEvent.Reconnecting, () => { setConnection("reconnecting"); noteAudioQuality(ConnectionQuality.Poor); });
     room.on(RoomEvent.Reconnected, () => { setConnection("connected"); syncPermission(); });
     room.on(RoomEvent.Disconnected, () => {
       if (disposed || !allowRecoveryRef.current) return;
@@ -108,6 +137,7 @@ export function useLiveMeeting(join: JoinResponse) {
       void recoverWithFreshToken();
     });
     room.on(RoomEvent.ParticipantPermissionsChanged, syncPermission);
+    room.on(RoomEvent.ConnectionQualityChanged, (quality) => noteAudioQuality(quality));
     room.on(RoomEvent.TrackSubscribed, onTrackSubscribed);
     room.on(RoomEvent.TrackUnsubscribed, onTrackUnsubscribed);
     room.on(RoomEvent.DataReceived, onData);
@@ -122,7 +152,7 @@ export function useLiveMeeting(join: JoinResponse) {
       for (const element of audioElements) element.remove();
       roomRef.current = null;
     };
-  }, [join.connectionId, join.livekitToken, join.livekitUrl, join.occurrence.id, join.occurrence.roomId]);
+  }, [join.connectionId, join.livekitToken, join.livekitUrl, join.occurrence.id, join.occurrence.roomId, noteAudioQuality]);
 
   useEffect(() => {
     const livePhase = ["LOBBY", "STARTING", "RUNNING", "ENDING"].includes(occurrence.status);
@@ -144,9 +174,10 @@ export function useLiveMeeting(join: JoinResponse) {
       setMediaError("");
     } catch {
       setMicEnabled(false);
+      noteAudioQuality(ConnectionQuality.Poor);
       setMediaError("Your microphone is unavailable. Check browser permission and try again.");
     }
-  }, [micAllowed, micEnabled]);
+  }, [micAllowed, micEnabled, noteAudioQuality]);
 
   const raiseHand = useCallback(async () => {
     const room = roomRef.current;
@@ -178,5 +209,5 @@ export function useLiveMeeting(join: JoinResponse) {
     }
   }, [join.connectionId, occurrence.id]);
 
-  return { connection, occurrence, setOccurrence, captions, recap, micEnabled, micAllowed, mediaError, left, toggleMic, raiseHand, leaveMeeting };
+  return { connection, occurrence, setOccurrence, captions, recap, micEnabled, micAllowed, mediaError, audioQuality, left, toggleMic, raiseHand, leaveMeeting };
 }

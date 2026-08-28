@@ -20,6 +20,9 @@ from app.domain.models import (
     CapabilityClaims,
     CapabilityExchangeRequest,
     CapabilityExchangeResponse,
+    DashboardRoomItem,
+    DashboardRoomsRequest,
+    DashboardRoomsResponse,
     EndMeetingPermissionRequest,
     EndMeetingRequest,
     HistoryItem,
@@ -64,7 +67,36 @@ def _claims(request: Request) -> CapabilityClaims:
 
 def _authorize_room(claims: CapabilityClaims, room_id: str, kind: CapabilityKind) -> None:
     if claims.room_id != room_id or claims.kind != kind:
-        raise ForbiddenError("Capability does not grant access to this room")
+        raise ForbiddenError("This private room is not available with the current link")
+
+
+def _history_item(occurrence):  # type: ignore[no-untyped-def]
+    participant_names: list[str] = []
+    seen_slots: set[str] = set()
+    for slot_id in [*occurrence.turn_order, *occurrence.attendance]:
+        if slot_id in seen_slots:
+            continue
+        seen_slots.add(slot_id)
+        attendance = occurrence.attendance.get(slot_id)
+        if attendance and attendance.display_name not in participant_names:
+            participant_names.append(attendance.display_name)
+    duration_seconds = None
+    if occurrence.started_at and occurrence.ended_at:
+        duration_seconds = max(
+            0,
+            int((occurrence.ended_at - occurrence.started_at).total_seconds()),
+        )
+    return HistoryItem(
+        occurrence_id=occurrence.id,
+        number=occurrence.number,
+        status=occurrence.status,
+        created_at=occurrence.created_at,
+        started_at=occurrence.started_at,
+        ended_at=occurrence.ended_at,
+        recap=occurrence.recap,
+        participants=participant_names,
+        duration_seconds=duration_seconds,
+    )
 
 
 async def _publish_postprocess_now(container: Container, occurrence_id: str) -> None:
@@ -95,6 +127,56 @@ def create_room(request: Request, payload: RoomCreate) -> RoomCreatedResponse:
         3600,
     )
     return container.rooms.create(payload)
+
+
+@router.post("/dashboard/rooms", response_model=DashboardRoomsResponse)
+def dashboard_rooms(
+    request: Request, payload: DashboardRoomsRequest
+) -> DashboardRoomsResponse:
+    """Resolve only admin links held by this browser; never list rooms globally."""
+
+    container = _container(request)
+    resolved: list[DashboardRoomItem] = []
+    unavailable: list[str] = []
+    seen_room_ids: set[str] = set()
+    for credential in payload.rooms:
+        if credential.room_id in seen_room_ids:
+            continue
+        seen_room_ids.add(credential.room_id)
+        try:
+            container.capabilities.verify_token(
+                credential.room_id,
+                credential.token,
+                CapabilityKind.ADMIN,
+            )
+            room = container.repository.get_room(credential.room_id)
+        except (UnauthorizedError, NotFoundError):
+            unavailable.append(credential.room_id)
+            continue
+        resolved.append(
+            DashboardRoomItem(
+                room=RoomView.from_room(room),
+                current_occurrence=container.repository.get_active_occurrence(credential.room_id),
+                history=[
+                    _history_item(item)
+                    for item in container.repository.list_occurrences(
+                        credential.room_id, limit=90
+                    )
+                ],
+            )
+        )
+    if unavailable:
+        container.rate_limiter.enforce(
+            container.rate_limiter.privacy_key(
+                "dashboard-capability-failure", _client_ip(request)
+            ),
+            container.settings.capability_failure_rate_per_minute,
+            60,
+        )
+    return DashboardRoomsResponse(
+        rooms=resolved,
+        unavailable_room_ids=unavailable,
+    )
 
 
 @router.post("/capability-sessions", response_model=CapabilityExchangeResponse)
@@ -150,7 +232,7 @@ def current_capability_session(request: Request) -> CapabilityExchangeResponse:
 def get_room(request: Request, room_id: str):  # type: ignore[no-untyped-def]
     claims = _claims(request)
     if claims.room_id != room_id:
-        raise ForbiddenError("Capability does not grant access to this room")
+        raise ForbiddenError("This private room is not available with the current link")
     room = _container(request).repository.get_room(room_id)
     if claims.kind == CapabilityKind.SEAT and claims.slot_id:
         return ParticipantRoomView.from_room_and_slot(room, claims.slot_id)
@@ -271,7 +353,7 @@ async def start_occurrence(request: Request, occurrence_id: str, payload: StartR
     container = _container(request)
     occurrence = container.repository.get_occurrence(occurrence_id)
     if occurrence.room_id != claims.room_id:
-        raise ForbiddenError("Capability does not grant access to this occurrence")
+        raise ForbiddenError("This meeting is not available with the current link")
     occurrence = container.meetings.start(occurrence_id, claims.slot_id)
     await container.livekit.dispatch_agent(occurrence)
     return occurrence
@@ -282,7 +364,7 @@ def occurrence_state(request: Request, occurrence_id: str):  # type: ignore[no-u
     claims = _claims(request)
     occurrence = _container(request).repository.get_occurrence(occurrence_id)
     if claims.room_id != occurrence.room_id:
-        raise ForbiddenError("Capability does not grant access to this occurrence")
+        raise ForbiddenError("This meeting is not available with the current link")
     return occurrence
 
 
@@ -293,7 +375,7 @@ def hand_raise(request: Request, occurrence_id: str):  # type: ignore[no-untyped
         raise ForbiddenError("Seat capability required")
     occurrence = _container(request).repository.get_occurrence(occurrence_id)
     if occurrence.room_id != claims.room_id:
-        raise ForbiddenError("Capability does not grant access to this occurrence")
+        raise ForbiddenError("This meeting is not available with the current link")
     return _container(request).meetings.raise_hand(occurrence_id, claims.slot_id)
 
 
@@ -305,7 +387,7 @@ async def leave_occurrence(request: Request, occurrence_id: str, payload: LeaveR
     container = _container(request)
     occurrence = container.repository.get_occurrence(occurrence_id)
     if occurrence.room_id != claims.room_id:
-        raise ForbiddenError("Capability does not grant access to this occurrence")
+        raise ForbiddenError("This meeting is not available with the current link")
     occurrence = container.meetings.leave(occurrence_id, claims.slot_id, payload.connection_id)
     await container.livekit.enforce_floor(occurrence)
     await container.livekit.publish_message(
@@ -326,7 +408,7 @@ async def end_occurrence(
     container = _container(request)
     occurrence = container.repository.get_occurrence(occurrence_id)
     if occurrence.room_id != claims.room_id:
-        raise ForbiddenError("Capability does not grant access to this occurrence")
+        raise ForbiddenError("This meeting is not available with the current link")
 
     reason = "ended_by_admin"
     if claims.kind == CapabilityKind.SEAT:
@@ -359,7 +441,7 @@ def participant_recap(request: Request, occurrence_id: str):  # type: ignore[no-
     claims = _claims(request)
     occurrence = _container(request).repository.get_occurrence(occurrence_id)
     if occurrence.room_id != claims.room_id:
-        raise ForbiddenError("Capability does not grant access to this occurrence")
+        raise ForbiddenError("This meeting is not available with the current link")
     if claims.kind == CapabilityKind.SEAT and claims.slot_id not in occurrence.attendance:
         raise ForbiddenError("Recap is available only to attendees")
     if occurrence.recap is None:
@@ -372,15 +454,7 @@ def room_history(request: Request, room_id: str) -> list[HistoryItem]:
     claims = _claims(request)
     _authorize_room(claims, room_id, CapabilityKind.ADMIN)
     return [
-        HistoryItem(
-            occurrence_id=item.id,
-            number=item.number,
-            status=item.status,
-            created_at=item.created_at,
-            started_at=item.started_at,
-            ended_at=item.ended_at,
-            recap=item.recap,
-        )
+        _history_item(item)
         for item in _container(request).repository.list_occurrences(room_id, limit=90)
     ]
 
