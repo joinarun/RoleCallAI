@@ -10,6 +10,7 @@
     "test": "vitest",
     "test:e2e": "playwright test",
     "test:e2e:live": "ROLECALL_E2E_LIVEKIT=1 playwright test e2e/live-meeting.spec.ts",
+    "test:deployed-ui": "node scripts/deployed-ui-smoke.mjs",
     "capture:previews": "node scripts/capture-previews.mjs",
     "typecheck": "tsc -b --pretty false",
     "lint": "eslint . --max-warnings=0"
