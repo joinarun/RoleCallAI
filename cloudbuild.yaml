@@ -1,0 +1,18 @@
+substitutions:
+  _REGION: europe-west4
+  _REPOSITORY: rolecall-dev
+  _TAG: manual
+
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args: ["build", "-f", "Dockerfile.control", "-t", "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/control:${_TAG}", "."]
+  - name: gcr.io/cloud-builders/docker
+    args: ["build", "-f", "Dockerfile.jobs", "-t", "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/jobs:${_TAG}", "."]
+  - name: gcr.io/cloud-builders/docker
+    args: ["build", "-f", "Dockerfile.worker", "-t", "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/worker:${_TAG}", "."]
+images:
+  - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/control:${_TAG}"
+  - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/jobs:${_TAG}"
+  - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/worker:${_TAG}"
+options:
+  logging: CLOUD_LOGGING_ONLY

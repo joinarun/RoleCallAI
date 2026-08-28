@@ -1,0 +1,189 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rolecall-worker
+  labels:
+    app.kubernetes.io/name: rolecall-worker
+    app.kubernetes.io/part-of: rolecallai
+spec:
+  replicas: {{ .Values.replicas }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rolecall-worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rolecall-worker
+        app.kubernetes.io/part-of: rolecallai
+      annotations:
+        cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+    spec:
+      serviceAccountName: rolecall-worker
+      terminationGracePeriodSeconds: 120
+      nodeSelector:
+        rolecall-pool: workers
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: rolecall-worker
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: worker
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: rolecall-worker
+          env:
+            - name: ROLECALL_LIVEKIT_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: livekit-credentials
+                  key: api-key
+            - name: ROLECALL_LIVEKIT_API_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: livekit-credentials
+                  key: api-secret
+            - name: LIVEKIT_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: livekit-credentials
+                  key: api-key
+            - name: LIVEKIT_API_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: livekit-credentials
+                  key: api-secret
+          ports:
+            - name: health
+              containerPort: 8081
+              protocol: TCP
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+          startupProbe:
+            tcpSocket:
+              port: health
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 24
+          readinessProbe:
+            tcpSocket:
+              port: health
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          livenessProbe:
+            tcpSocket:
+              port: health
+            periodSeconds: 30
+            timeoutSeconds: 2
+            failureThreshold: 3
+          resources:
+{{ toYaml .Values.resources | indent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rolecall-worker
+  labels:
+    app.kubernetes.io/name: rolecall-worker
+spec:
+  selector:
+    app.kubernetes.io/name: rolecall-worker
+  ports:
+    - name: health
+      port: 8081
+      targetPort: health
+    - name: metrics
+      port: 9090
+      targetPort: metrics
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: rolecall-worker
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: rolecall-worker
+  minReplicas: {{ .Values.replicas }}
+  maxReplicas: {{ .Values.maxReplicas }}
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      selectPolicy: Max
+      policies:
+        - type: Pods
+          value: 2
+          periodSeconds: 30
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 120
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 60
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 75
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: rolecall-worker
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rolecall-worker
+---
+apiVersion: monitoring.googleapis.com/v1
+kind: PodMonitoring
+metadata:
+  name: rolecall-worker
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rolecall-worker
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 30s

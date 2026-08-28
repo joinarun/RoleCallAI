@@ -1,0 +1,35 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: livekit-signaling
+spec:
+  secretName: livekit-signaling-tls
+  duration: 2160h
+  renewBefore: 360h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
+  dnsNames:
+    - {{ .Values.signalHostname | quote }}
+  issuerRef:
+    name: rolecall-signal-letsencrypt
+    kind: ClusterIssuer
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: livekit-turn
+spec:
+  secretName: livekit-turn-tls
+  duration: 2160h
+  renewBefore: 360h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
+  dnsNames:
+    - {{ .Values.turnHostname | quote }}
+  issuerRef:
+    name: rolecall-turn-letsencrypt
+    kind: ClusterIssuer

@@ -1,0 +1,35 @@
+metrics_to_run:
+  - eu_multi_turn_task_success
+  - eu_multi_turn_tool_use_quality
+  - eu_multi_turn_trajectory_quality
+  - eu_hallucination
+  - eu_instruction_following
+  - eu_safety
+  - rolecall_quality
+  - rolecall_deterministic_invariants
+
+custom_metrics:
+  - name: eu_multi_turn_task_success
+    custom_function_file: eu_task_success.py
+    execution: local
+  - name: eu_multi_turn_tool_use_quality
+    custom_function_file: eu_tool_use.py
+    execution: local
+  - name: eu_multi_turn_trajectory_quality
+    custom_function_file: eu_trajectory.py
+    execution: local
+  - name: eu_hallucination
+    custom_function_file: eu_hallucination.py
+    execution: local
+  - name: eu_instruction_following
+    custom_function_file: eu_instruction.py
+    execution: local
+  - name: eu_safety
+    custom_function_file: eu_safety.py
+    execution: local
+  - name: rolecall_quality
+    custom_function_file: response_quality.py
+    execution: local
+  - name: rolecall_deterministic_invariants
+    custom_function_file: deterministic_invariants.py
+    execution: local

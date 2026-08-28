@@ -1,0 +1,14 @@
+FROM python:3.13-slim
+ARG UV_VERSION=0.8.13
+RUN pip install --no-cache-dir "uv==${UV_VERSION}"
+ENV UV_PROJECT_ENVIRONMENT=/opt/rolecall-venv \
+    UV_COMPILE_BYTECODE=1 \
+    PYTHONUNBUFFERED=1
+WORKDIR /workspace/services/rolecall-agent
+COPY services/rolecall-agent/pyproject.toml services/rolecall-agent/uv.lock services/rolecall-agent/README.md ./
+RUN uv sync --frozen --no-dev --no-install-project
+COPY services/rolecall-agent/app ./app
+RUN uv sync --frozen --no-dev
+USER 65532:65532
+EXPOSE 8081 9090
+CMD ["/opt/rolecall-venv/bin/python", "-m", "app.worker", "start"]

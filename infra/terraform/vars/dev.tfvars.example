@@ -1,0 +1,20 @@
+project_id             = "your-gcp-project-id"
+region                 = "europe-west4"
+zone                   = "europe-west4-a"
+environment            = "dev"
+firestore_database     = "rolecall-dev"
+summary_model_location = "eu"
+image_tag              = "manual"
+
+# Use a monitored address. The configured dev.tfvars file is ignored by Git.
+acme_email         = "replace-before-apply@example.com"
+notification_email = ""
+
+control_min_instances = 0
+media_min_nodes       = 1
+media_max_nodes       = 3
+worker_min_nodes      = 2
+worker_max_nodes      = 6
+worker_min_replicas   = 2
+worker_max_replicas   = 6
+retention_days        = 90

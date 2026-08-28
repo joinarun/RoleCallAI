@@ -1,0 +1,6 @@
+apiVersion: v2
+name: rolecall-worker
+description: One-meeting-per-process LiveKit RTC and Google ADK worker
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

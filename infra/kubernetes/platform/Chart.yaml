@@ -1,0 +1,6 @@
+apiVersion: v2
+name: rolecall-platform
+description: RoleCallAI certificates, credentials, signaling ingress, and TURN service
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

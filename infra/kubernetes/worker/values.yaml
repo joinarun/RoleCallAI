@@ -1,0 +1,18 @@
+image:
+  repository: europe-west4-docker.pkg.dev/your-gcp-project-id/rolecall-dev/worker
+  tag: manual
+replicas: 2
+maxReplicas: 6
+serviceAccount:
+  googleServiceAccount: ""
+config: {}
+secrets:
+  livekitApiKey: ""
+  livekitApiSecret: ""
+resources:
+  requests:
+    cpu: 500m
+    memory: 2Gi
+  limits:
+    cpu: "2"
+    memory: 4Gi

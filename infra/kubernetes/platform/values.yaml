@@ -1,0 +1,9 @@
+acmeEmail: replace-before-apply@example.com
+signalHostname: livekit.127-0-0-1.sslip.io
+turnHostname: turn.127-0-0-1.sslip.io
+signalClass: rolecall-signal
+turnClass: rolecall-turn
+livekitService: livekit-server
+secrets:
+  livekitApiKey: ""
+  livekitApiSecret: ""

@@ -1,0 +1,15 @@
+.git
+.agents
+.agents-cli-spec.md
+**/.venv
+**/node_modules
+**/dist
+**/.pytest_cache
+**/.ruff_cache
+**/__pycache__
+**/*.pyc
+infra/terraform/.terraform
+infra/terraform/*.tfplan
+infra/terraform/*.tfstate*
+.env
+**/.env

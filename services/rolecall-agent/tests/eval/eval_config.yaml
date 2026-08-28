@@ -1,0 +1,17 @@
+metrics_to_run:
+  - multi_turn_task_success
+  - multi_turn_tool_use_quality
+  - multi_turn_trajectory_quality
+  - hallucination
+  - instruction_following
+  - safety
+  - rolecall_quality
+  - rolecall_deterministic_invariants
+
+custom_metrics:
+  - name: rolecall_quality
+    custom_function_file: response_quality.py
+    execution: local
+  - name: rolecall_deterministic_invariants
+    custom_function_file: deterministic_invariants.py
+    execution: local
