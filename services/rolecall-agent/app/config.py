@@ -48,6 +48,7 @@ class Settings(BaseSettings):
     agent_recovery_seconds: int = 60
     wrap_up_seconds: int = 120
     closing_grace_seconds: int = 60
+    closing_playout_timeout_seconds: int = 45
     processing_timeout_minutes: int = 60
 
     room_create_rate_per_hour: int = 5
@@ -55,6 +56,7 @@ class Settings(BaseSettings):
 
     postprocess_topic: str = "rolecall-postprocess"
     cleanup_topic: str = "rolecall-cleanup"
+    immediate_outbox_publish: bool = False
     pubsub_audience: str | None = None
     pubsub_invoker_email: str | None = None
     scheduler_invoker_email: str | None = None

@@ -435,6 +435,9 @@ class FirestoreRepository:
 
         return ensure(transaction)
 
+    def get_outbox(self, record_id: str) -> OutboxRecord:
+        return _model(OutboxRecord, self.client.collection("outbox").document(record_id).get())
+
     def list_pending_outbox(self, limit: int = 100) -> list[OutboxRecord]:
         query = (
             self.client.collection("outbox")

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
@@ -34,6 +35,7 @@ from app.domain.models import (
     RoomView,
     StartRequest,
 )
+from app.jobs.outbox import publish_outbox_record
 
 logger = logging.getLogger("rolecall.api")
 router = APIRouter(prefix="/v1")
@@ -63,6 +65,25 @@ def _claims(request: Request) -> CapabilityClaims:
 def _authorize_room(claims: CapabilityClaims, room_id: str, kind: CapabilityKind) -> None:
     if claims.room_id != room_id or claims.kind != kind:
         raise ForbiddenError("Capability does not grant access to this room")
+
+
+async def _publish_postprocess_now(container: Container, occurrence_id: str) -> None:
+    """Reduce recap latency while preserving the scheduled outbox retry."""
+    if not container.settings.immediate_outbox_publish:
+        return
+    try:
+        await asyncio.to_thread(
+            publish_outbox_record,
+            container.settings,
+            container.repository,
+            f"postprocess:{occurrence_id}",
+        )
+    except Exception as exc:
+        logger.warning(
+            "event=outbox_immediate_publish_deferred occurrence_id=%s error_type=%s",
+            occurrence_id,
+            type(exc).__name__,
+        )
 
 
 @router.post("/rooms", response_model=RoomCreatedResponse, status_code=status.HTTP_201_CREATED)
@@ -290,6 +311,8 @@ async def leave_occurrence(request: Request, occurrence_id: str, payload: LeaveR
     await container.livekit.publish_message(
         occurrence, "meeting.state", occurrence.model_dump(mode="json")
     )
+    if occurrence.status == OccurrenceStatus.PROCESSING:
+        await _publish_postprocess_now(container, occurrence.id)
     return occurrence
 
 
@@ -327,6 +350,7 @@ async def end_occurrence(
     await container.livekit.publish_message(
         occurrence, "meeting.state", occurrence.model_dump(mode="json")
     )
+    await _publish_postprocess_now(container, occurrence.id)
     return occurrence
 
 

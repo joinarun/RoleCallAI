@@ -31,6 +31,7 @@ locals {
     ROLECALL_SUMMARY_MODEL                             = "gemini-3.7-flash"
     ROLECALL_SUMMARY_MODEL_LOCATION                    = var.summary_model_location
     ROLECALL_AGENT_ENGINE_ID                           = google_vertex_ai_reasoning_engine.memory.name
+    ROLECALL_IMMEDIATE_OUTBOX_PUBLISH                  = "true"
     GOOGLE_GENAI_USE_VERTEXAI                          = "true"
     GOOGLE_CLOUD_PROJECT                               = var.project_id
     GOOGLE_CLOUD_LOCATION                              = var.region

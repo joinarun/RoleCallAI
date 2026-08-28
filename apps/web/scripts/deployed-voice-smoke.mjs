@@ -109,7 +109,8 @@ try {
         durationMinutes: 5,
         role: "SCRUM_MASTER",
         agentName: "Nova",
-        instructions: "Keep the smoke-test stand-up concise and move promptly between both people.",
+        instructions:
+          "Run exactly one concise stand-up round and ask each participant once. After both responses, do not open another round. Speak a closing recap with four short, complete numbered sentences, then call finish_meeting as the final action.",
         game: null,
       },
     }),
@@ -211,11 +212,30 @@ try {
     };
   });
 
-  // A concise facilitator may legitimately finish after both updates. Isolate
-  // the control checks in fresh lobby occurrences so they do not race the
-  // model's closing decision.
-  await finishActiveOccurrence();
+  const closingCaption = await waitUntil("complete natural closing recap", async () => {
+    const response = await adminApi.get(`/v1/occurrences/${firstOccurrenceId}/transcript`);
+    const transcript = await jsonResponse(response, "read natural closing transcript");
+    const lastHumanSequence = Math.max(
+      ...transcript
+        .filter((segment) => segment.speakerType === "SEAT")
+        .map((segment) => segment.sequence),
+    );
+    const closingText = transcript
+      .filter(
+        (segment) => segment.speakerType === "AGENT" && segment.sequence > lastHumanSequence,
+      )
+      .map((segment) => segment.text)
+      .join(" ");
+    const completeSentences = closingText.match(/[.!?](?:\s|$)/g)?.length ?? 0;
+    if (completeSentences < 3) return null;
+    return { completeSentences, characters: closingText.length };
+  }, 120_000, 2_000);
+
+  // The first occurrence must become idle without an admin/API end. This is
+  // the deployed regression for deferred finish plus complete audio playout.
+  const naturalClosingStartedAt = Date.now();
   await waitForIdle();
+  const naturalClosingSeconds = (Date.now() - naturalClosingStartedAt) / 1000;
 
   const leaveJoin = await joinParticipant(
     firstParticipant.page,
@@ -273,6 +293,8 @@ try {
     JSON.stringify({
       status: "passed",
       voiceEvidence,
+      closingCaption,
+      naturalClosingSeconds,
       participantLeave: true,
       delegatedParticipantEnd: true,
       rememberedMicrophone: true,

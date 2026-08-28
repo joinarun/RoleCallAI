@@ -6,6 +6,7 @@ arguments intentionally contain no room, occurrence, or session IDs.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -24,6 +25,7 @@ class MeetingToolScope:
     repository: Repository
     meetings: MeetingService
     memory: RoomMemoryService
+    defer_finish: Callable[[str], None] | None = None
 
 
 _SCOPE: ContextVar[MeetingToolScope | None] = ContextVar("rolecall_tool_scope", default=None)
@@ -158,8 +160,21 @@ async def search_room_memory(query: str, slot_id: str | None) -> dict[str, Any]:
 
 
 def finish_meeting(reason: str) -> dict[str, Any]:
-    """Close live facilitation and enqueue idempotent partial/full post-processing."""
+    """Finish after the current closing turn's generated audio has fully played."""
     scope = _scope()
+    if scope.defer_finish is not None:
+        occurrence = scope.repository.get_occurrence(scope.occurrence_id)
+        if occurrence.status not in {OccurrenceStatus.RUNNING, OccurrenceStatus.ENDING}:
+            return {
+                "status": "rejected",
+                "reason": "The meeting is not accepting a facilitator finish request",
+            }
+        scope.defer_finish(reason)
+        return {
+            "status": "ok",
+            "phase": occurrence.status.value,
+            "completion": "after_audio_playout",
+        }
     try:
         occurrence = scope.meetings.finish(scope.occurrence_id, reason)
     except RoleCallError as exc:

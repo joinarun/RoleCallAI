@@ -22,8 +22,10 @@ from app.app_utils import services as adk_services
 from app.config import get_settings
 from app.domain.enums import FloorOwnerType
 from app.domain.models import LiveKitMessage, TranscriptSegment
+from app.jobs.outbox import publish_outbox_record
 from app.live.adk_session import live_run_config
 from app.live.audio import FloorAudioFrame, FloorAudioFramer
+from app.live.playout import DeferredFinishCoordinator, drain_audio_playout
 from app.observability import configure_observability
 from app.retrieval.memory import RoomMemoryService
 from app.services.livekit import LiveKitService
@@ -70,11 +72,13 @@ async def meeting_entrypoint(ctx: JobContext) -> None:
     meetings = MeetingService(repository, settings)
     memory = RoomMemoryService(settings)
     livekit = LiveKitService(settings)
+    deferred_finish = DeferredFinishCoordinator()
     tool_scope = MeetingToolScope(
         occurrence_id=occurrence_id,
         repository=repository,
         meetings=meetings,
         memory=memory,
+        defer_finish=deferred_finish.request,
     )
 
     await ctx.connect(auto_subscribe=AutoSubscribe.AUDIO_ONLY)
@@ -227,7 +231,21 @@ async def meeting_entrypoint(ctx: JobContext) -> None:
         """Keep real-time LiveKit playout from blocking Gemini event intake."""
         while not stop.is_set():
             frame = await output_frames.get()
-            await output_source.capture_frame(frame)
+            try:
+                await output_source.capture_frame(frame)
+            except Exception as exc:
+                current = await asyncio.to_thread(repository.get_occurrence, occurrence_id)
+                if stop.is_set() or not current.status.active or current.status.value == "PROCESSING":
+                    logger.info(
+                        "event=audio_playout_closed occurrence_id=%s error_type=%s",
+                        occurrence_id,
+                        type(exc).__name__,
+                    )
+                    await stop.wait()
+                    return
+                raise
+            finally:
+                output_frames.task_done()
 
     async def persist_caption(
         speaker_type: FloorOwnerType, speaker_id: str, speaker_name: str, text: str
@@ -320,6 +338,7 @@ async def meeting_entrypoint(ctx: JobContext) -> None:
                             while not output_frames.empty():
                                 try:
                                     output_frames.get_nowait()
+                                    output_frames.task_done()
                                 except asyncio.QueueEmpty:
                                     break
                         for part in (
@@ -351,6 +370,8 @@ async def meeting_entrypoint(ctx: JobContext) -> None:
                             )
                             for converted in [*resampler.push(frame), *resampler.flush()]:
                                 await output_frames.put(converted)
+                        if event.turn_complete:
+                            deferred_finish.note_turn_complete()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -363,10 +384,58 @@ async def meeting_entrypoint(ctx: JobContext) -> None:
                 if datetime.now(UTC) - failure_started >= timedelta(
                     seconds=settings.agent_recovery_seconds
                 ):
-                    meetings.finish(occurrence_id, "agent_recovery_timeout")
+                    await asyncio.to_thread(
+                        meetings.finish, occurrence_id, "agent_recovery_timeout"
+                    )
+                    await publish_postprocess_now()
                     stop.set()
                     return
                 await asyncio.sleep(2)
+
+    async def publish_postprocess_now() -> None:
+        if not settings.immediate_outbox_publish:
+            return
+        try:
+            await asyncio.to_thread(
+                publish_outbox_record,
+                settings,
+                repository,
+                f"postprocess:{occurrence_id}",
+            )
+        except Exception as exc:
+            logger.warning(
+                "event=outbox_immediate_publish_deferred occurrence_id=%s error_type=%s",
+                occurrence_id,
+                type(exc).__name__,
+            )
+
+    async def finalize_deferred_finish() -> None:
+        """Commit PROCESSING only after Gemini's complete closing turn is audible."""
+        timeout_seconds = float(settings.closing_playout_timeout_seconds)
+        try:
+            reason = await deferred_finish.wait_until_turn_complete(timeout_seconds)
+        except TimeoutError:
+            reason = deferred_finish.reason or "agent_closing_turn_timeout"
+            logger.warning(
+                "event=closing_turn_timeout occurrence_id=%s timeout_seconds=%.1f",
+                occurrence_id,
+                timeout_seconds,
+            )
+
+        elapsed = time.monotonic() - (deferred_finish.requested_at or time.monotonic())
+        remaining = max(timeout_seconds - elapsed, 0.1)
+        drained = await drain_audio_playout(output_frames, output_source, remaining)
+        current = await asyncio.to_thread(meetings.finish, occurrence_id, reason)
+        await livekit.enforce_floor(current)
+        await publish_message("meeting.state", current.model_dump(mode="json"))
+        await publish_postprocess_now()
+        logger.info(
+            "event=closing_playout_complete occurrence_id=%s drained=%s elapsed_ms=%.1f",
+            occurrence_id,
+            str(drained).lower(),
+            (time.monotonic() - (deferred_finish.requested_at or time.monotonic())) * 1000,
+        )
+        stop.set()
 
     async def controller_loop() -> None:
         nonlocal audio_stream_open, floor_snapshot, last_controller_heartbeat
@@ -397,7 +466,17 @@ async def meeting_entrypoint(ctx: JobContext) -> None:
                         audio_stream_open = False
                 await livekit.enforce_floor(current)
                 await publish_message("meeting.state", current.model_dump(mode="json"))
-            if not current.status.active or current.status.value == "PROCESSING":
+            if current.status.value == "PROCESSING":
+                # A facilitator finish is committed by ``finalize_deferred_finish``
+                # after its full closing audio has played. External/admin finishes
+                # are immediate and only need the outbox fast path before shutdown.
+                if deferred_finish.requested:
+                    await asyncio.sleep(0.5)
+                    continue
+                await publish_postprocess_now()
+                stop.set()
+                return
+            if not current.status.active:
                 stop.set()
                 return
             await asyncio.sleep(0.5)
@@ -407,6 +486,7 @@ async def meeting_entrypoint(ctx: JobContext) -> None:
         asyncio.create_task(send_audio_downstream(), name="rolecall-audio-downstream"),
         asyncio.create_task(run_adk(), name="rolecall-adk-live"),
         asyncio.create_task(controller_loop(), name="rolecall-controller"),
+        asyncio.create_task(finalize_deferred_finish(), name="rolecall-closing-finalizer"),
     }
     results: list[object] = []
     await ctx.room.local_participant.set_attributes({"lk.agent.state": "listening"})
@@ -422,6 +502,7 @@ async def meeting_entrypoint(ctx: JobContext) -> None:
         for task in stream_tasks:
             task.cancel()
         await asyncio.gather(*stream_tasks, return_exceptions=True)
+        await output_source.aclose()
     for result in results:
         if isinstance(result, asyncio.CancelledError):
             continue

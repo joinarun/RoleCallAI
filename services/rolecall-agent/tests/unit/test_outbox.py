@@ -3,7 +3,7 @@ from __future__ import annotations
 from app.container import Container
 from app.domain.enums import RoleType
 from app.domain.models import RoomCreate
-from app.jobs.outbox import drain_outbox
+from app.jobs.outbox import drain_outbox, publish_outbox_record
 
 
 class Future:
@@ -39,3 +39,29 @@ def test_outbox_publishes_once_and_marks_record(container: Container) -> None:
     assert drain_outbox(container, publisher) == {"published": 1, "failed": 0}
     assert len(publisher.messages) == 1
     assert drain_outbox(container, publisher) == {"published": 0, "failed": 0}
+
+
+def test_known_outbox_record_can_publish_without_waiting_for_scheduler(
+    container: Container,
+) -> None:
+    created = container.rooms.create(
+        RoomCreate(
+            name="Immediate outbox room",
+            expected_participants=2,
+            duration_minutes=10,
+            role=RoleType.SCRUM_MASTER,
+            agent_name="Nova",
+        )
+    )
+    container.rooms.delete(created.room.id)
+    record = container.repository.list_pending_outbox()[0]
+    publisher = Publisher()
+
+    assert publish_outbox_record(
+        container.settings, container.repository, record.id, publisher
+    )
+    assert not publish_outbox_record(
+        container.settings, container.repository, record.id, publisher
+    )
+    assert len(publisher.messages) == 1
+    assert container.repository.get_outbox(record.id).published_at is not None

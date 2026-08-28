@@ -48,6 +48,7 @@ class Repository(Protocol):
     def list_transcript_segments(self, occurrence_id: str) -> list[TranscriptSegment]: ...
     def save_outbox(self, record: OutboxRecord) -> OutboxRecord: ...
     def ensure_outbox(self, record: OutboxRecord) -> OutboxRecord: ...
+    def get_outbox(self, record_id: str) -> OutboxRecord: ...
     def list_pending_outbox(self, limit: int = 100) -> list[OutboxRecord]: ...
 
 
@@ -288,6 +289,13 @@ class InMemoryRepository:
             if existing is not None:
                 return deepcopy(existing)
             self.outbox[record.id] = deepcopy(record)
+            return deepcopy(record)
+
+    def get_outbox(self, record_id: str) -> OutboxRecord:
+        with self._lock:
+            record = self.outbox.get(record_id)
+            if record is None:
+                raise NotFoundError("Outbox record not found")
             return deepcopy(record)
 
     def list_pending_outbox(self, limit: int = 100) -> list[OutboxRecord]:

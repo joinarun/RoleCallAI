@@ -5,7 +5,13 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from pydantic import ValidationError
 
-from app.agent_tools import MeetingToolScope, bind_meeting_scope, get_meeting_state, record_outcome
+from app.agent_tools import (
+    MeetingToolScope,
+    bind_meeting_scope,
+    finish_meeting,
+    get_meeting_state,
+    record_outcome,
+)
 from app.container import Container
 from app.domain.enums import FloorOwnerType, GameType, OccurrenceStatus, RoleType
 from app.domain.errors import ConflictError, UnauthorizedError
@@ -307,6 +313,41 @@ def test_tools_are_bound_and_outcomes_are_idempotent(container: Container) -> No
         second = record_outcome("ACTION", "Send the plan", room.slots[0].id)
     assert first["outcomeId"] == second["outcomeId"]
     assert len(container.repository.get_occurrence(occurrence.id).outcomes) == 1
+
+
+def test_live_finish_tool_defers_processing_until_worker_playout(container: Container) -> None:
+    created = create_room(container)
+    room = container.repository.get_room(created.room.id)
+    container.meetings.join(
+        room.id,
+        room.slots[0].id,
+        JoinRequest(name="One", consent_version="v1", connection_id="connection-1"),
+    )
+    occurrence = container.meetings.join(
+        room.id,
+        room.slots[1].id,
+        JoinRequest(name="Two", consent_version="v1", connection_id="connection-2"),
+    )
+    requested: list[str] = []
+    scope = MeetingToolScope(
+        occurrence.id,
+        container.repository,
+        container.meetings,
+        container.memory,
+        defer_finish=requested.append,
+    )
+
+    with bind_meeting_scope(scope):
+        result = finish_meeting("normal_completion")
+
+    assert result == {
+        "status": "ok",
+        "phase": "RUNNING",
+        "completion": "after_audio_playout",
+    }
+    assert requested == ["normal_completion"]
+    assert container.repository.get_occurrence(occurrence.id).status == OccurrenceStatus.RUNNING
+    assert container.repository.list_pending_outbox() == []
 
 
 def test_pcm_resampling_and_framing() -> None:

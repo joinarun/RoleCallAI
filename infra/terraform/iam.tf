@@ -14,6 +14,7 @@ locals {
       "roles/logging.logWriter",
       "roles/monitoring.metricWriter",
       "roles/cloudtrace.agent",
+      "roles/pubsub.publisher",
     ])
     jobs = toset([
       "roles/aiplatform.user",
@@ -29,6 +30,7 @@ locals {
       "roles/logging.logWriter",
       "roles/monitoring.metricWriter",
       "roles/cloudtrace.agent",
+      "roles/pubsub.publisher",
     ])
     gke_nodes = toset([
       "roles/artifactregistry.reader",
