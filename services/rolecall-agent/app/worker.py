@@ -23,7 +23,7 @@ from app.config import get_settings
 from app.domain.enums import FloorOwnerType
 from app.domain.models import LiveKitMessage, TranscriptSegment
 from app.live.adk_session import live_run_config
-from app.live.audio import Pcm16FrameBuffer
+from app.live.audio import FloorAudioFrame, FloorAudioFramer
 from app.observability import configure_observability
 from app.retrieval.memory import RoomMemoryService
 from app.services.livekit import LiveKitService
@@ -89,16 +89,31 @@ async def meeting_entrypoint(ctx: JobContext) -> None:
     )
 
     request_queue = LiveRequestQueue()
-    input_frames: asyncio.Queue[bytes] = asyncio.Queue(maxsize=25)
+    # Twenty-five model-ready 80 ms frames provide two seconds of bounded
+    # jitter tolerance. Previously this queue held raw ~10 ms LiveKit chunks,
+    # which left only ~250 ms and dropped speech during brief model stalls.
+    input_frames: asyncio.Queue[FloorAudioFrame] = asyncio.Queue(maxsize=25)
+    output_frames: asyncio.Queue[rtc.AudioFrame] = asyncio.Queue(maxsize=200)
     stream_tasks: set[asyncio.Task[None]] = set()
     stop = asyncio.Event()
     audio_frames_dropped = 0
     last_gap_log_at = datetime.min.replace(tzinfo=UTC)
     last_human_final_at: float | None = None
+    last_human_audio_slot_id: str | None = None
     last_controller_heartbeat = time.monotonic()
+    audio_stream_open = False
+    # The controller refreshes this snapshot at 2 Hz. Audio callbacks must not
+    # perform synchronous Firestore reads: LiveKit can deliver ~100 raw chunks
+    # per second, and those network reads previously starved the queue before a
+    # later participant's turn.
+    floor_snapshot = (
+        occurrence.current_floor_type,
+        occurrence.current_floor_slot_id,
+        occurrence.floor_epoch,
+    )
 
     async def publish_message(message_type: str, payload: dict[str, object]) -> None:
-        current = repository.get_occurrence(occurrence_id)
+        current = await asyncio.to_thread(repository.get_occurrence, occurrence_id)
         message = LiveKitMessage(
             type=message_type,
             occurrence_id=occurrence_id,
@@ -115,14 +130,16 @@ async def meeting_entrypoint(ctx: JobContext) -> None:
             return
         stream = rtc.AudioStream(track)
         resamplers: dict[int, rtc.AudioResampler] = {}
+        framer = FloorAudioFramer(sample_rate=16000, frame_ms=80)
         async for event in stream:
-            current = repository.get_occurrence(occurrence_id)
+            floor_type, floor_slot_id, floor_epoch = floor_snapshot
             expected_identity = (
-                f"seat:{current.current_floor_slot_id}"
-                if current.current_floor_type == FloorOwnerType.SEAT
+                f"seat:{floor_slot_id}"
+                if floor_type == FloorOwnerType.SEAT and floor_slot_id
                 else ""
             )
             if participant.identity != expected_identity:
+                framer.clear()
                 continue
             frame = event.frame
             resampler = resamplers.setdefault(
@@ -131,22 +148,23 @@ async def meeting_entrypoint(ctx: JobContext) -> None:
             )
             for converted in resampler.push(frame):
                 data = bytes(converted.data)
-                if input_frames.full():
-                    audio_frames_dropped += 1
-                    try:
-                        input_frames.get_nowait()
-                    except asyncio.QueueEmpty:
-                        pass
-                    now = datetime.now(UTC)
-                    if now - last_gap_log_at >= timedelta(seconds=10):
-                        logger.warning(
-                            "event=audio_gap occurrence_id=%s dropped_frames=%d",
-                            occurrence_id,
-                            audio_frames_dropped,
-                        )
-                        last_gap_log_at = now
-                        audio_frames_dropped = 0
-                input_frames.put_nowait(data)
+                for scoped_frame in framer.push(floor_slot_id or "", floor_epoch, data):
+                    if input_frames.full():
+                        audio_frames_dropped += 1
+                        try:
+                            input_frames.get_nowait()
+                        except asyncio.QueueEmpty:
+                            pass
+                        now = datetime.now(UTC)
+                        if now - last_gap_log_at >= timedelta(seconds=10):
+                            logger.warning(
+                                "event=audio_gap occurrence_id=%s dropped_frames=%d",
+                                occurrence_id,
+                                audio_frames_dropped,
+                            )
+                            last_gap_log_at = now
+                            audio_frames_dropped = 0
+                    input_frames.put_nowait(scoped_frame)
 
     def on_track_subscribed(
         track: rtc.Track,
@@ -180,19 +198,45 @@ async def meeting_entrypoint(ctx: JobContext) -> None:
                 on_track_subscribed(publication.track, publication, participant)
 
     async def send_audio_upstream() -> None:
-        frame_buffer = Pcm16FrameBuffer(sample_rate=16000, frame_ms=80)
+        nonlocal audio_stream_open, last_human_audio_slot_id
         while not stop.is_set():
-            data = await input_frames.get()
-            for frame in frame_buffer.push(data):
-                request_queue.send_realtime(
-                    types.Blob(mime_type="audio/pcm;rate=16000", data=frame)
-                )
+            try:
+                scoped_frame = await asyncio.wait_for(input_frames.get(), timeout=1.05)
+            except TimeoutError:
+                if audio_stream_open:
+                    # Gemini's automatic VAD expects AudioStreamEnd whenever
+                    # microphone input pauses for about a second. It flushes
+                    # cached speech and still permits later audio to resume.
+                    request_queue.send_audio_stream_end()
+                    audio_stream_open = False
+                continue
+            floor_type, floor_slot_id, floor_epoch = floor_snapshot
+            if (
+                floor_type != FloorOwnerType.SEAT
+                or floor_slot_id != scoped_frame.slot_id
+                or floor_epoch != scoped_frame.floor_epoch
+            ):
+                continue
+            request_queue.send_realtime(
+                types.Blob(mime_type="audio/pcm;rate=16000", data=scoped_frame.data)
+            )
+            last_human_audio_slot_id = scoped_frame.slot_id
+            audio_stream_open = True
+
+    async def send_audio_downstream() -> None:
+        """Keep real-time LiveKit playout from blocking Gemini event intake."""
+        while not stop.is_set():
+            frame = await output_frames.get()
+            await output_source.capture_frame(frame)
 
     async def persist_caption(
         speaker_type: FloorOwnerType, speaker_id: str, speaker_name: str, text: str
     ) -> None:
         nonlocal last_human_final_at
-        sequence = len(repository.list_transcript_segments(occurrence_id)) + 1
+        existing_segments = await asyncio.to_thread(
+            repository.list_transcript_segments, occurrence_id
+        )
+        sequence = len(existing_segments) + 1
         now = datetime.now(UTC)
         segment = TranscriptSegment(
             id=f"{occurrence_id}:segment:{sequence}",
@@ -206,7 +250,7 @@ async def meeting_entrypoint(ctx: JobContext) -> None:
             ended_at=now,
             expires_at=now + timedelta(days=settings.retention_days),
         )
-        repository.save_transcript_segment(segment)
+        await asyncio.to_thread(repository.save_transcript_segment, segment)
         await publish_message("caption.final", segment.model_dump(mode="json"))
         if speaker_type == FloorOwnerType.SEAT:
             last_human_final_at = time.perf_counter()
@@ -251,7 +295,11 @@ async def meeting_entrypoint(ctx: JobContext) -> None:
                             input_buffer += event.input_transcription.text
                             if event.input_transcription.finished and input_buffer.strip():
                                 current = repository.get_occurrence(occurrence_id)
-                                slot_id = current.current_floor_slot_id or "unknown"
+                                slot_id = (
+                                    last_human_audio_slot_id
+                                    or current.current_floor_slot_id
+                                    or "unknown"
+                                )
                                 attendance = current.attendance.get(slot_id)
                                 await persist_caption(
                                     FloorOwnerType.SEAT,
@@ -267,6 +315,13 @@ async def meeting_entrypoint(ctx: JobContext) -> None:
                                     FloorOwnerType.AGENT, "agent", room.agent_name, output_buffer
                                 )
                                 output_buffer = ""
+                        if event.interrupted:
+                            output_source.clear_queue()
+                            while not output_frames.empty():
+                                try:
+                                    output_frames.get_nowait()
+                                except asyncio.QueueEmpty:
+                                    break
                         for part in (
                             event.content.parts if event.content and event.content.parts else []
                         ):
@@ -295,7 +350,7 @@ async def meeting_entrypoint(ctx: JobContext) -> None:
                                 input_rate=source_rate, output_rate=48000, num_channels=1
                             )
                             for converted in [*resampler.push(frame), *resampler.flush()]:
-                                await output_source.capture_frame(converted)
+                                await output_frames.put(converted)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -314,16 +369,32 @@ async def meeting_entrypoint(ctx: JobContext) -> None:
                 await asyncio.sleep(2)
 
     async def controller_loop() -> None:
-        nonlocal last_controller_heartbeat
+        nonlocal audio_stream_open, floor_snapshot, last_controller_heartbeat
         last_sequence = -1
+        last_floor_epoch = -1
         while not stop.is_set():
-            current = meetings.tick(occurrence_id)
+            current = await asyncio.to_thread(meetings.tick, occurrence_id)
             heartbeat_at = time.monotonic()
             if heartbeat_at - last_controller_heartbeat >= 15:
-                current = meetings.mark_agent_seen(occurrence_id)
+                current = await asyncio.to_thread(meetings.mark_agent_seen, occurrence_id)
                 last_controller_heartbeat = heartbeat_at
+            floor_snapshot = (
+                current.current_floor_type,
+                current.current_floor_slot_id,
+                current.floor_epoch,
+            )
             if current.sequence != last_sequence:
                 last_sequence = current.sequence
+                if current.floor_epoch != last_floor_epoch:
+                    last_floor_epoch = current.floor_epoch
+                    while not input_frames.empty():
+                        try:
+                            input_frames.get_nowait()
+                        except asyncio.QueueEmpty:
+                            break
+                    if audio_stream_open and current.current_floor_type != FloorOwnerType.SEAT:
+                        request_queue.send_audio_stream_end()
+                        audio_stream_open = False
                 await livekit.enforce_floor(current)
                 await publish_message("meeting.state", current.model_dump(mode="json"))
             if not current.status.active or current.status.value == "PROCESSING":
@@ -333,6 +404,7 @@ async def meeting_entrypoint(ctx: JobContext) -> None:
 
     tasks = {
         asyncio.create_task(send_audio_upstream(), name="rolecall-audio-upstream"),
+        asyncio.create_task(send_audio_downstream(), name="rolecall-audio-downstream"),
         asyncio.create_task(run_adk(), name="rolecall-adk-live"),
         asyncio.create_task(controller_loop(), name="rolecall-controller"),
     }

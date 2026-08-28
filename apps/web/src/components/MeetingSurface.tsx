@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { CheckCircle2, Clock3, Hand, LoaderCircle, Mic, MicOff, Radio, Sparkles, Users } from "lucide-react";
+import { CheckCircle2, Clock3, Hand, LoaderCircle, LogOut, Mic, MicOff, Octagon, Radio, Sparkles, Users } from "lucide-react";
 import { api, jsonBody } from "../lib/api";
 import { useLiveMeeting } from "../hooks/useLiveMeeting";
 import type { JoinResponse, Recap } from "../types";
@@ -72,6 +72,8 @@ export function MeetingSurface({ join }: { join: JoinResponse }) {
   const canStart = isLobby && now >= new Date(live.occurrence.lobbyDeadlineAt).getTime();
   const raised = live.occurrence.handRaiseQueue.includes(join.slotId);
   const myTurn = live.occurrence.currentFloorSlotId === join.slotId;
+  const canEndMeeting = (live.occurrence.endMeetingSlotIds ?? []).includes(join.slotId);
+  const meetingIsLive = ["LOBBY", "STARTING", "RUNNING", "ENDING"].includes(live.occurrence.status);
 
   async function start() {
     setActionBusy(true);
@@ -86,6 +88,37 @@ export function MeetingSurface({ join }: { join: JoinResponse }) {
     }
   }
 
+  async function leave() {
+    if (!confirm("Leave this meeting? Everyone else can continue.")) return;
+    setActionBusy(true);
+    setError("");
+    try {
+      await live.leaveMeeting();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "You left, but presence may take a moment to update.");
+    } finally {
+      setActionBusy(false);
+    }
+  }
+
+  async function endForEveryone() {
+    if (!confirm("End this meeting for everyone and create a recap from the conversation so far?")) return;
+    setActionBusy(true);
+    setError("");
+    try {
+      const occurrence = await api<JoinResponse["occurrence"]>(`/v1/occurrences/${live.occurrence.id}:end`, { method: "POST" });
+      live.setOccurrence(occurrence);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not end the meeting.");
+    } finally {
+      setActionBusy(false);
+    }
+  }
+
+  if (live.left) {
+    return <section className="meeting-complete"><div className="complete-mark left-mark"><LogOut /></div><p className="eyebrow mint">You left the room</p><h1>The meeting can continue without you.</h1><p className="recap-summary">You can close this tab. Your persistent seat link can be used again for a future meeting.</p><a className="button primary" href="/">Return to RoleCallAI</a></section>;
+  }
+
   if (recap) {
     return <section className="meeting-complete"><div className="complete-mark"><CheckCircle2 /></div><p className="eyebrow mint">Meeting complete</p><h1>Clear words. Concrete next steps.</h1><p className="recap-summary">{recap.summary}</p><div className="recap-grid"><RecapGroup title="Decisions" values={recap.decisions} /><RecapGroup title="Actions" values={recap.actions.map((item) => item.text)} /><RecapGroup title="Blockers" values={recap.blockers} /><RecapGroup title="Ideas" values={recap.ideas} /></div></section>;
   }
@@ -98,8 +131,8 @@ export function MeetingSurface({ join }: { join: JoinResponse }) {
         <section className="agent-stage" aria-label="Agent stage"><div className={`voice-orb ${currentSpeaker.agent ? "agent-active" : "listening"}`} aria-hidden="true"><span className="orb-core"><Sparkles /></span><span className="orbit orbit-one" /><span className="orbit orbit-two" /></div><p className="eyebrow">Current speaker</p><h2>{currentSpeaker.name}</h2><p>{isLobby ? "Waiting for the room to gather" : currentSpeaker.agent ? `${join.agentName} is facilitating` : myTurn ? "The floor is yours" : "Listening to the current turn"}</p>{isLobby && <div className="lobby-progress"><div>{Object.values(live.occurrence.attendance).filter((person) => person.connected).length} present</div><span>Automatic start when all expected seats arrive</span>{canStart && <button disabled={actionBusy} className="button primary" onClick={() => void start()}>{actionBusy ? <LoaderCircle className="spin" /> : <Radio />} Start with present participants</button>}</div>}{live.occurrence.status === "PROCESSING" && <div className="processing-note"><LoaderCircle className="spin" /> Turning the conversation into a recap…</div>}</section>
         <aside className="caption-panel"><div className="section-label"><Radio /> Live captions</div><div className="caption-stream" aria-live="polite" aria-relevant="additions">{live.captions.length === 0 ? <div className="caption-empty"><span className="caption-cursor" /><p>Finalized speech appears here.</p></div> : live.captions.slice(-8).map((caption) => <article key={caption.id}><strong>{caption.speakerName}</strong><p>{caption.text}</p></article>)}</div></aside>
       </div>
-      {error && <p className="form-error meeting-error" role="alert">{error}</p>}
-      <footer className="meeting-controls"><button className={`control-button ${live.micEnabled ? "on" : ""}`} disabled={!live.micAllowed} onClick={() => void live.toggleMic()}>{live.micEnabled ? <Mic /> : <MicOff />}<span>{!live.micAllowed ? "Mic unlocks on your turn" : live.micEnabled ? "Mute" : "Unmute"}</span></button><button className={`control-button hand-button ${raised ? "on" : ""}`} disabled={isLobby || raised} onClick={() => void live.raiseHand()}><Hand /><span>{raised ? "Hand raised" : "Raise hand"}</span></button><div className="floor-note"><span className={myTurn ? "mint-dot" : ""} />{myTurn ? "You own the floor" : `Floor: ${currentSpeaker.name}`}</div></footer>
+      {(error || live.mediaError) && <p className="form-error meeting-error" role="alert">{error || live.mediaError}</p>}
+      <footer className="meeting-controls"><button className={`control-button ${live.micEnabled ? "on" : ""}`} disabled={!live.micAllowed} onClick={() => void live.toggleMic()}>{live.micEnabled ? <Mic /> : <MicOff />}<span>{!live.micAllowed ? "Mic unlocks on your turn" : live.micEnabled ? "Mute" : "Unmute"}</span></button><button className={`control-button hand-button ${raised ? "on" : ""}`} disabled={isLobby || raised} onClick={() => void live.raiseHand()}><Hand /><span>{raised ? "Hand raised" : "Raise hand"}</span></button>{canEndMeeting && meetingIsLive && <button className="control-button end-button" disabled={actionBusy} onClick={() => void endForEveryone()}><Octagon /><span>End for everyone</span></button>}<button className="control-button leave-button" disabled={actionBusy || !meetingIsLive} onClick={() => void leave()}><LogOut /><span>Leave meeting</span></button><div className="floor-note"><span className={myTurn ? "mint-dot" : ""} />{myTurn ? "You own the floor" : `Floor: ${currentSpeaker.name}`}</div></footer>
     </section>
   );
 }

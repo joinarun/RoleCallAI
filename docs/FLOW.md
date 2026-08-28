@@ -26,7 +26,7 @@ sequenceDiagram
         P->>API: Open join URL with token in URL fragment
         API->>DB: Validate SHA-256 capability digest
         API-->>P: Set short-lived secure HttpOnly cookie
-        P->>API: Enter display name, consent, and pass device check
+        P->>API: Enter display name, consent, and pass first/required device check
         API->>DB: First arrival creates next occurrence transactionally
         API->>LK: Create/authorize LiveKit room and seat identity
         API-->>P: Occurrence state, LiveKit URL, and short-lived JWT
@@ -55,6 +55,20 @@ sequenceDiagram
         LK-->>P: Play agent and current speaker, update roster/timer/captions
         P-->>W: Current speaker interrupts naturally, others send hand.raise
         W->>DB: Persist only finalized transcript and outcomes
+    end
+
+    opt Admin delegates meeting control
+        Admin->>API: Allow or revoke End for everyone on a seat
+        API->>DB: Update room and active occurrence permissions
+        API-->>P: Broadcast authoritative meeting state
+    end
+
+    alt Participant leaves intentionally
+        P->>API: Leave with current connection identity
+        API->>DB: Mark departed and skip floor immediately
+    else Admin or delegated participant ends meeting
+        Admin->>API: End for everyone
+        API->>DB: Move partial/full occurrence to PROCESSING
     end
 
     W->>DB: Begin ENDING with two minutes left
@@ -99,5 +113,11 @@ stateDiagram-v2
   turns, tracks scores where applicable, and announces results.
 - **Brainstorm Facilitator:** frames the topic, gathers divergent ideas, clusters
   and prioritizes them, and converts them into next steps.
+- **Sprint Retrospective, Project Status, and Incident Response:** run blameless
+  improvement, cross-team status, or fact-disciplined restoration workflows.
+- **Course Instructor, Workshop Facilitator, and Technical Interviewer:** teach,
+  guide collaborative activities, or evaluate fairly with balanced turns.
+- **Product Discovery, Decision-Making, and Town Hall:** uncover evidence before
+  solutions, compare options against criteria, or moderate relevant Q&A.
 - **Custom:** applies the admin instructions inside the same timed, server-enforced
   floor and lifecycle framework.

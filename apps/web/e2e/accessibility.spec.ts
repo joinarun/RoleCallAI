@@ -20,7 +20,7 @@ async function expectWcagClean(page: Page): Promise<void> {
 test("creation flow is WCAG AA clean, keyboard reachable, and responsive", async ({ page }) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: /give every meeting/i })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /let ai lead the conversation forward/i })).toBeVisible();
 
   await page.keyboard.press("Tab");
   await expect(page.getByRole("link", { name: /skip to content/i })).toBeFocused();

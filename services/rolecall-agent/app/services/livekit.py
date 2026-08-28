@@ -74,6 +74,8 @@ class LiveKitService:
 
     async def enforce_floor(self, occurrence: Occurrence) -> None:
         """Set publish permission for every connected human in one authoritative pass."""
+        if self.settings.env == "test":
+            return
         client = self._api_client()
         try:
             for slot_id, attendance in occurrence.attendance.items():
@@ -104,6 +106,8 @@ class LiveKitService:
         self, occurrence: Occurrence, message_type: str, payload: dict[str, Any]
     ) -> bool:
         """Best-effort reliable room message; API polling remains the fallback."""
+        if self.settings.env == "test":
+            return False
         message = LiveKitMessage(
             type=message_type,
             occurrence_id=occurrence.id,

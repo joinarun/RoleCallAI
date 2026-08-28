@@ -88,6 +88,11 @@ async def test_evaluation_tools_preserve_controller_and_scope_invariants() -> No
         "status": "rejected",
         "reason": "use advance_floor while a participant owns the floor",
     }
+    handoff = eval_tools.advance_floor(context)
+    assert handoff["floorType"] == "AGENT"
+    assert handoff["floorSlotId"] is None
+    assert handoff["nextFloorSlotId"] == "seat-2"
+    assert eval_tools.give_floor("seat-2", "Your turn", context)["status"] == "ok"
 
     first = eval_tools.record_outcome("ACTION", "Send plan", "seat-1", context)
     second = eval_tools.record_outcome("ACTION", "Send plan", "seat-1", context)

@@ -157,6 +157,8 @@ def _reconcile_stuck_processing(
             current.failure_reason = "postprocessing_timeout"
             current.current_floor_type = FloorOwnerType.NONE
             current.current_floor_slot_id = None
+            current.next_floor_slot_id = None
+            current.floor_epoch += 1
             current.expires_at = (current.ended_at or timestamp) + timedelta(
                 days=container.settings.retention_days
             )

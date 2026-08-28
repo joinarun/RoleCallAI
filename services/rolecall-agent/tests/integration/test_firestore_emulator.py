@@ -54,6 +54,10 @@ def test_named_firestore_transactions_preserve_concurrent_arrivals() -> None:
     assert persisted_room.active_occurrence_id == occurrence.id
     assert persisted_room.occurrence_counter == 1
 
+    delegated = container.rooms.set_end_meeting_permission(room.id, room.slots[0].id, True)
+    assert delegated.slots[0].can_end_meeting is True
+    assert room.slots[0].id in repository.get_occurrence(occurrence.id).end_meeting_slot_ids
+
     container.meetings.finish(occurrence.id, "emulator_test")
 
     def complete(current):  # type: ignore[no-untyped-def]

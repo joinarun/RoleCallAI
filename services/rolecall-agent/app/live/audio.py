@@ -3,8 +3,18 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from dataclasses import dataclass
 
 import numpy as np
+
+
+@dataclass(frozen=True)
+class FloorAudioFrame:
+    """One model-ready frame bound to the authoritative floor generation."""
+
+    slot_id: str
+    floor_epoch: int
+    data: bytes
 
 
 class Pcm16FrameBuffer:
@@ -30,6 +40,28 @@ class Pcm16FrameBuffer:
 
     def clear(self) -> None:
         self._pending.clear()
+
+
+class FloorAudioFramer:
+    """Frame PCM after floor scoping so queued audio cannot cross a handoff."""
+
+    def __init__(self, sample_rate: int = 16000, frame_ms: int = 80) -> None:
+        self._buffer = Pcm16FrameBuffer(sample_rate=sample_rate, frame_ms=frame_ms)
+        self._scope: tuple[str, int] | None = None
+
+    def push(self, slot_id: str, floor_epoch: int, data: bytes) -> list[FloorAudioFrame]:
+        scope = (slot_id, floor_epoch)
+        if self._scope != scope:
+            self._buffer.clear()
+            self._scope = scope
+        return [
+            FloorAudioFrame(slot_id=slot_id, floor_epoch=floor_epoch, data=frame)
+            for frame in self._buffer.push(data)
+        ]
+
+    def clear(self) -> None:
+        self._scope = None
+        self._buffer.clear()
 
 
 def resample_pcm16(data: bytes, input_rate: int, output_rate: int) -> bytes:

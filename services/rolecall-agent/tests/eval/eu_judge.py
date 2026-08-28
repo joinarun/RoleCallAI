@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import threading
+import time
 from typing import Literal
 
 from google import genai
@@ -36,6 +37,8 @@ class Verdict(BaseModel):
 
 _CACHE: dict[str, Verdict] = {}
 _LOCK = threading.Lock()
+_TRANSIENT_STATUS_CODES = {429, 500, 502, 503, 504}
+_MAX_ATTEMPTS = 4
 
 
 def _regional_client() -> genai.Client:
@@ -46,6 +49,29 @@ def _regional_client() -> genai.Client:
     if location != "eu":
         raise RuntimeError("RoleCallAI evaluation is pinned to the EU endpoint")
     return genai.Client(vertexai=True, project=project, location=location)
+
+
+def _generate_with_retry(client: genai.Client, prompt: str):
+    """Retry only transient Vertex capacity/service failures with bounded backoff."""
+
+    for attempt in range(_MAX_ATTEMPTS):
+        try:
+            return client.models.generate_content(
+                model="gemini-3.7-flash",
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    temperature=0,
+                    response_mime_type="application/json",
+                    response_schema=Verdict,
+                ),
+            )
+        except Exception as error:
+            status_code = getattr(error, "code", None) or getattr(error, "status_code", None)
+            if status_code not in _TRANSIENT_STATUS_CODES or attempt == _MAX_ATTEMPTS - 1:
+                raise
+            time.sleep(2**attempt)
+
+    raise AssertionError("unreachable")
 
 
 def _grade(instance: dict) -> Verdict:
@@ -74,15 +100,7 @@ Trace:
 """
         client = _regional_client()
         try:
-            response = client.models.generate_content(
-                model="gemini-3.7-flash",
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    temperature=0,
-                    response_mime_type="application/json",
-                    response_schema=Verdict,
-                ),
-            )
+            response = _generate_with_retry(client, prompt)
         finally:
             client.close()
         verdict = response.parsed

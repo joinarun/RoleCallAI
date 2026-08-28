@@ -6,6 +6,7 @@ import { api, jsonBody } from "../lib/api";
 import type { JoinResponse, Room } from "../types";
 
 const CONSENT_VERSION = "2026-08-phase1";
+const MICROPHONE_READY_KEY = "rolecall-microphone-ready:v1";
 const MeetingSurface = lazy(() =>
   import("../components/MeetingSurface").then((module) => ({ default: module.MeetingSurface })),
 );
@@ -30,6 +31,68 @@ function JoinContent({ roomId, slotId }: { roomId: string; slotId: string }) {
     }).catch((reason) => setError(reason instanceof Error ? reason.message : "Could not open the room."));
   }, [roomId, slotId]);
 
+  useEffect(() => {
+    let disposed = false;
+    let permission: PermissionStatus | null = null;
+    let permissionChange: (() => void) | null = null;
+
+    function clearRememberedCheck() {
+      try {
+        localStorage.removeItem(MICROPHONE_READY_KEY);
+      } catch {
+        // Storage can be unavailable in a private browsing context.
+      }
+    }
+
+    function applyPermissionState(state: PermissionState) {
+      if (disposed) return;
+      if (state === "granted") {
+        setDeviceReady(true);
+        setDeviceLabel("Previously approved microphone");
+      } else {
+        setDeviceReady(false);
+        setDeviceLabel(state === "denied" ? "Microphone access is blocked" : "Microphone check required");
+        if (state === "denied") clearRememberedCheck();
+      }
+    }
+
+    async function restoreDeviceCheck() {
+      let remembered = false;
+      try {
+        remembered = localStorage.getItem(MICROPHONE_READY_KEY) === "ready";
+      } catch {
+        return;
+      }
+      if (!remembered || !navigator.mediaDevices?.getUserMedia) return;
+      if (!navigator.permissions?.query) {
+        // Safari does not consistently expose microphone permission through the
+        // Permissions API. A successful prior check is the safest available signal.
+        setDeviceReady(true);
+        setDeviceLabel("Previously checked microphone");
+        return;
+      }
+      try {
+        permission = await navigator.permissions.query({ name: "microphone" as PermissionName });
+        applyPermissionState(permission.state);
+        const observedPermission = permission;
+        permissionChange = () => applyPermissionState(observedPermission.state);
+        observedPermission.addEventListener("change", permissionChange);
+      } catch {
+        setDeviceReady(true);
+        setDeviceLabel("Previously checked microphone");
+      }
+    }
+
+    void restoreDeviceCheck();
+    return () => {
+      disposed = true;
+      if (permission && permissionChange) {
+        permission.removeEventListener("change", permissionChange);
+      }
+      permission = null;
+    };
+  }, []);
+
   const seatNumber = useMemo(() => room?.slots.find((seat) => seat.id === slotId)?.ordinal, [room, slotId]);
 
   async function checkDevice() {
@@ -41,6 +104,11 @@ function JoinContent({ roomId, slotId }: { roomId: string; slotId: string }) {
       setDeviceLabel(track.label || "Default microphone");
       stream.getTracks().forEach((item) => item.stop());
       setDeviceReady(true);
+      try {
+        localStorage.setItem(MICROPHONE_READY_KEY, "ready");
+      } catch {
+        // The current session still remains ready when persistent storage is unavailable.
+      }
     } catch {
       setError("Microphone access is required for a voice-only meeting.");
       setDeviceReady(false);

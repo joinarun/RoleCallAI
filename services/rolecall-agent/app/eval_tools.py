@@ -92,7 +92,14 @@ def give_floor(slot_id: str, prompt: str, tool_context: ToolContext) -> dict[str
             "status": "rejected",
             "reason": "use advance_floor while a participant owns the floor",
         }
+    pending = meeting.get("nextFloorSlotId")
+    if pending and pending != slot_id:
+        return {
+            "status": "rejected",
+            "reason": "the controller selected a different next participant",
+        }
     meeting["currentFloor"] = {"type": "SEAT", "slotId": slot_id}
+    meeting["nextFloorSlotId"] = None
     meeting["sequence"] = int(meeting.get("sequence", 0)) + 1
     meeting["lastFloorPrompt"] = " ".join(prompt.split())[:240]
     _save(tool_context, fixture)
@@ -100,13 +107,22 @@ def give_floor(slot_id: str, prompt: str, tool_context: ToolContext) -> dict[str
 
 
 def advance_floor(tool_context: ToolContext) -> dict[str, Any]:
-    """Advance by hand-raise priority, then deterministic remaining turn order."""
+    """Return to agent floor and select the next deterministic participant."""
     fixture = _fixture(tool_context)
     meeting = _meeting(fixture)
+    current_floor = meeting.get("currentFloor") or {}
+    if current_floor.get("type") == "AGENT" and meeting.get("nextFloorSlotId") is not None:
+        return {
+            "status": "ok",
+            "floorType": "AGENT",
+            "floorSlotId": None,
+            "nextFloorSlotId": meeting.get("nextFloorSlotId"),
+            "sequence": int(meeting.get("sequence", 0)),
+        }
     participants = _participants(meeting)
     queue = list(meeting.get("handRaiseQueue", []))
     order = list(meeting.get("turnOrder", []))
-    current = (meeting.get("currentFloor") or {}).get("slotId")
+    current = current_floor.get("slotId")
     candidates = (
         queue + order[order.index(current) + 1 :] + order if current in order else queue + order
     )
@@ -120,16 +136,22 @@ def advance_floor(tool_context: ToolContext) -> dict[str, Any]:
         ),
         None,
     )
+    if (
+        selected is None
+        and current in participants
+        and participants[current].get("connected", False)
+    ):
+        selected = current
     meeting["handRaiseQueue"] = [item for item in queue if item != selected]
-    meeting["currentFloor"] = (
-        {"type": "SEAT", "slotId": selected} if selected else {"type": "AGENT", "slotId": None}
-    )
+    meeting["currentFloor"] = {"type": "AGENT", "slotId": None}
+    meeting["nextFloorSlotId"] = selected
     meeting["sequence"] = int(meeting.get("sequence", 0)) + 1
     _save(tool_context, fixture)
     return {
         "status": "ok",
-        "floorType": meeting["currentFloor"]["type"],
-        "floorSlotId": selected,
+        "floorType": "AGENT",
+        "floorSlotId": None,
+        "nextFloorSlotId": selected,
         "sequence": meeting["sequence"],
     }
 

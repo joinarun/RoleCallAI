@@ -26,6 +26,9 @@ class Repository(Protocol):
     def update_seat_display_name(
         self, room_id: str, slot_id: str, display_name: str, updated_at: datetime
     ) -> Room: ...
+    def set_seat_end_meeting_permission(
+        self, room_id: str, slot_id: str, allowed: bool, updated_at: datetime
+    ) -> Room: ...
     def delete_room(self, room_id: str) -> None: ...
     def find_capability(self, digest: str) -> CapabilityRecord | None: ...
     def save_capability_session(self, session: CapabilitySession) -> None: ...
@@ -106,6 +109,21 @@ class InMemoryRepository:
             if slot is None:
                 raise NotFoundError("Seat not found")
             slot.last_display_name = display_name
+            room.updated_at = updated_at
+            self.rooms[room_id] = deepcopy(room)
+            return deepcopy(room)
+
+    def set_seat_end_meeting_permission(
+        self, room_id: str, slot_id: str, allowed: bool, updated_at: datetime
+    ) -> Room:
+        with self._lock:
+            room = self.rooms.get(room_id)
+            if room is None:
+                raise NotFoundError("Room not found")
+            slot = next((item for item in room.slots if item.id == slot_id), None)
+            if slot is None:
+                raise NotFoundError("Seat not found")
+            slot.can_end_meeting = allowed
             room.updated_at = updated_at
             self.rooms[room_id] = deepcopy(room)
             return deepcopy(room)

@@ -96,6 +96,7 @@ class Seat(DomainModel):
     capability_digest: str
     capability_version: int = 1
     last_display_name: str | None = None
+    can_end_meeting: bool = False
 
 
 class Room(DomainModel):
@@ -129,6 +130,7 @@ class Attendance(DomainModel):
     connected: bool = True
     connection_id: str
     disconnected_at: datetime | None = None
+    left_at: datetime | None = None
     absent: bool = False
 
 
@@ -191,8 +193,11 @@ class Occurrence(DomainModel):
     turn_order: list[str] = Field(default_factory=list)
     current_floor_type: FloorOwnerType = FloorOwnerType.AGENT
     current_floor_slot_id: str | None = None
+    next_floor_slot_id: str | None = None
     current_prompt: str | None = None
+    floor_epoch: int = 0
     hand_raise_queue: list[str] = Field(default_factory=list)
+    end_meeting_slot_ids: list[str] = Field(default_factory=list)
     outcomes: list[Outcome] = Field(default_factory=list)
     recap: MeetingRecap | None = None
     previous_recap: MeetingRecap | None = None
@@ -247,6 +252,7 @@ class SeatView(DomainModel):
     id: str
     ordinal: int
     last_display_name: str | None = None
+    can_end_meeting: bool = False
 
 
 class RoomView(DomainModel):
@@ -274,7 +280,12 @@ class RoomView(DomainModel):
             instructions=room.instructions,
             game=room.game,
             slots=[
-                SeatView(id=slot.id, ordinal=slot.ordinal, last_display_name=slot.last_display_name)
+                SeatView(
+                    id=slot.id,
+                    ordinal=slot.ordinal,
+                    last_display_name=slot.last_display_name,
+                    can_end_meeting=slot.can_end_meeting,
+                )
                 for slot in room.slots
             ],
             created_at=room.created_at,
@@ -306,6 +317,7 @@ class ParticipantRoomView(DomainModel):
                     id=slot.id,
                     ordinal=slot.ordinal,
                     last_display_name=slot.last_display_name,
+                    can_end_meeting=slot.can_end_meeting,
                 )
             ],
         )
@@ -343,6 +355,18 @@ class RefreshRequest(DomainModel):
     connection_id: Annotated[str, Field(min_length=8, max_length=200)]
 
 
+class LeaveRequest(DomainModel):
+    connection_id: Annotated[str, Field(min_length=8, max_length=200)]
+
+
+class EndMeetingRequest(DomainModel):
+    reason: Annotated[str, Field(min_length=1, max_length=240)] = "ended_by_authorized_user"
+
+
+class EndMeetingPermissionRequest(DomainModel):
+    allowed: bool
+
+
 class JoinResponse(DomainModel):
     occurrence: Occurrence
     livekit_url: str
@@ -352,6 +376,7 @@ class JoinResponse(DomainModel):
     agent_name: str
     expected_participants: int
     connection_id: str
+    can_end_meeting: bool = False
 
 
 class StartRequest(DomainModel):

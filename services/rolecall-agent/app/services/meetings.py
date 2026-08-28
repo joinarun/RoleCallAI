@@ -68,6 +68,7 @@ class MeetingService:
             lobby_deadline_at=timestamp
             + timedelta(seconds=self.settings.lobby_early_start_seconds),
             previous_recap=previous,
+            end_meeting_slot_ids=[slot.id for slot in room.slots if slot.can_end_meeting],
         )
         return self.repository.create_occurrence_if_absent(candidate)
 
@@ -137,6 +138,7 @@ class MeetingService:
                 return current
             attendance.connected = True
             attendance.disconnected_at = None
+            attendance.left_at = None
             if current.status in {OccurrenceStatus.RUNNING, OccurrenceStatus.ENDING}:
                 if slot_id not in current.turn_order:
                     current.turn_order.append(slot_id)
@@ -182,7 +184,9 @@ class MeetingService:
             current.started_at = timestamp
             current.current_floor_type = FloorOwnerType.AGENT
             current.current_floor_slot_id = None
+            current.next_floor_slot_id = None
             current.current_prompt = None
+            current.floor_epoch += 1
             current.agent_last_seen_at = timestamp
             current.sequence += 1
             return current
@@ -214,7 +218,9 @@ class MeetingService:
                 current.ended_at = now
                 current.current_floor_type = FloorOwnerType.NONE
                 current.current_floor_slot_id = None
+                current.next_floor_slot_id = None
                 current.current_prompt = None
+                current.floor_epoch += 1
             if phase == OccurrenceStatus.FAILED:
                 current.expires_at = now + timedelta(days=self.settings.retention_days)
             current.sequence += 1
@@ -236,15 +242,24 @@ class MeetingService:
                 and current.current_floor_slot_id != slot_id
             ):
                 raise ConflictError("Use advance_floor while a participant owns the floor")
+            if current.next_floor_slot_id and current.next_floor_slot_id != slot_id:
+                raise ConflictError("The controller selected a different next participant")
             if (
                 current.current_floor_type == FloorOwnerType.SEAT
                 and current.current_floor_slot_id == slot_id
                 and current.current_prompt == cleaned_prompt
             ):
                 return current
+            floor_changed = (
+                current.current_floor_type != FloorOwnerType.SEAT
+                or current.current_floor_slot_id != slot_id
+            )
             current.current_floor_type = FloorOwnerType.SEAT
             current.current_floor_slot_id = slot_id
+            current.next_floor_slot_id = None
             current.current_prompt = cleaned_prompt
+            if floor_changed:
+                current.floor_epoch += 1
             current.sequence += 1
             return current
 
@@ -263,7 +278,9 @@ class MeetingService:
                 return current
             current.current_floor_type = FloorOwnerType.AGENT
             current.current_floor_slot_id = None
+            current.next_floor_slot_id = None
             current.current_prompt = None
+            current.floor_epoch += 1
             current.sequence += 1
             return current
 
@@ -273,6 +290,11 @@ class MeetingService:
         def advance(current: Occurrence) -> Occurrence:
             if current.status not in {OccurrenceStatus.RUNNING, OccurrenceStatus.ENDING}:
                 raise InvalidTransitionError("The floor can only advance during a running meeting")
+            if (
+                current.current_floor_type == FloorOwnerType.AGENT
+                and current.next_floor_slot_id is not None
+            ):
+                return current
             current_slot = current.current_floor_slot_id
             start_index = (
                 current.turn_order.index(current_slot) + 1
@@ -286,24 +308,34 @@ class MeetingService:
                 (
                     slot_id
                     for slot_id in candidates
-                    if current.attendance.get(slot_id) and current.attendance[slot_id].connected
+                    if slot_id != current_slot
+                    and current.attendance.get(slot_id)
+                    and current.attendance[slot_id].connected
                 ),
                 None,
             )
-            if next_slot is None:
-                if current.current_floor_type == FloorOwnerType.AGENT:
-                    return current
-                current.current_floor_type = FloorOwnerType.AGENT
-                current.current_floor_slot_id = None
-                current.current_prompt = None
-                current.sequence += 1
+            if next_slot is None and current_slot:
+                current_attendance = current.attendance.get(current_slot)
+                if current_attendance and current_attendance.connected:
+                    next_slot = current_slot
+            if next_slot is not None:
+                current.hand_raise_queue = [
+                    item for item in current.hand_raise_queue if item != next_slot
+                ]
+            if (
+                current.current_floor_type == FloorOwnerType.AGENT
+                and current.current_floor_slot_id is None
+                and current.next_floor_slot_id == next_slot
+            ):
                 return current
-            current.hand_raise_queue = [
-                item for item in current.hand_raise_queue if item != next_slot
-            ]
-            current.current_floor_type = FloorOwnerType.SEAT
-            current.current_floor_slot_id = next_slot
-            current.current_prompt = "Please take your turn."
+            # A human-to-human transition always passes through an agent-owned
+            # bridge. This prevents the next microphone from opening while the
+            # agent is still acknowledging or summarizing the previous update.
+            current.current_floor_type = FloorOwnerType.AGENT
+            current.current_floor_slot_id = None
+            current.next_floor_slot_id = next_slot
+            current.current_prompt = None
+            current.floor_epoch += 1
             current.sequence += 1
             return current
 
@@ -337,6 +369,64 @@ class MeetingService:
             return current
 
         return self.repository.mutate_occurrence(occurrence_id, mark_disconnected)
+
+    def leave(
+        self,
+        occurrence_id: str,
+        slot_id: str,
+        connection_id: str,
+        now: datetime | None = None,
+    ) -> Occurrence:
+        """Mark an intentional departure and skip its floor without reconnect hold."""
+        timestamp = now or datetime.now(UTC)
+
+        def mark_left(current: Occurrence) -> Occurrence:
+            if current.status not in {
+                OccurrenceStatus.LOBBY,
+                OccurrenceStatus.STARTING,
+                OccurrenceStatus.RUNNING,
+                OccurrenceStatus.ENDING,
+            }:
+                raise ConflictError("This meeting no longer accepts participant departures")
+            attendance = current.attendance.get(slot_id)
+            if attendance is None or attendance.connection_id != connection_id:
+                raise ConflictError("Leave identity does not match this seat connection")
+            if not attendance.connected and attendance.left_at is not None:
+                return current
+            attendance.connected = False
+            attendance.disconnected_at = timestamp
+            attendance.left_at = timestamp
+            current.hand_raise_queue = [
+                item for item in current.hand_raise_queue if item != slot_id
+            ]
+            if current.current_floor_slot_id == slot_id:
+                start_index = (
+                    current.turn_order.index(slot_id) + 1 if slot_id in current.turn_order else 0
+                )
+                ordered = current.turn_order[start_index:] + current.turn_order[:start_index]
+                current.next_floor_slot_id = next(
+                    (
+                        candidate
+                        for candidate in ordered
+                        if candidate != slot_id
+                        and current.attendance.get(candidate)
+                        and current.attendance[candidate].connected
+                    ),
+                    None,
+                )
+                current.current_floor_type = FloorOwnerType.AGENT
+                current.current_floor_slot_id = None
+                current.current_prompt = None
+                current.floor_epoch += 1
+            current.sequence += 1
+            return current
+
+        occurrence = self.repository.mutate_occurrence(occurrence_id, mark_left)
+        if occurrence.status.active and not any(
+            item.connected for item in occurrence.attendance.values()
+        ):
+            return self.finish(occurrence_id, "all_participants_left")
+        return occurrence
 
     def record_outcome(
         self,
@@ -441,7 +531,9 @@ class MeetingService:
                 current.ended_at = timestamp
                 current.current_floor_type = FloorOwnerType.NONE
                 current.current_floor_slot_id = None
+                current.next_floor_slot_id = None
                 current.current_prompt = None
+                current.floor_epoch += 1
                 current.failure_reason = reason if reason.startswith("agent_") else None
                 current.sequence += 1
             return current

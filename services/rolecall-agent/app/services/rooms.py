@@ -131,6 +131,28 @@ class RoomService:
         self.repository.revoke_capability_sessions(room.id, slot.id, slot.capability_version)
         return self._capability_url("join", room.id, secret)
 
+    def set_end_meeting_permission(self, room_id: str, slot_id: str, allowed: bool) -> RoomView:
+        """Delegate or revoke the narrow ability to end a meeting for everyone."""
+        timestamp = datetime.now(UTC)
+        room = self.repository.set_seat_end_meeting_permission(room_id, slot_id, allowed, timestamp)
+        active = self.repository.get_active_occurrence(room_id)
+        if active is not None:
+
+            def synchronize(current):  # type: ignore[no-untyped-def]
+                delegated = set(current.end_meeting_slot_ids)
+                if allowed:
+                    delegated.add(slot_id)
+                else:
+                    delegated.discard(slot_id)
+                updated = sorted(delegated)
+                if updated != current.end_meeting_slot_ids:
+                    current.end_meeting_slot_ids = updated
+                    current.sequence += 1
+                return current
+
+            self.repository.mutate_occurrence(active.id, synchronize)
+        return RoomView.from_room(room)
+
     def delete(self, room_id: str) -> None:
         room = self.repository.get_room(room_id)
         if self.repository.get_active_occurrence(room_id):

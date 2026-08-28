@@ -11,6 +11,8 @@ from typing import Any
 import yaml
 from agentplatform._genai.types import common
 
+from app.domain.enums import RoleType
+
 HERE = Path(__file__).resolve().parent
 DATASET = HERE / "datasets" / "basic-dataset.json"
 CONFIG = HERE / "eval_config.yaml"
@@ -85,7 +87,7 @@ def validate_dataset() -> list[str]:
         if any(not re.fullmatch(r"seat-[0-9]+", str(item.get("slotId"))) for item in participants):
             raise ValueError(f"{case_id}: participant identity must use stable seat IDs")
 
-    expected_roles = {"SCRUM_MASTER", "FUN_FRIDAY", "BRAINSTORM", "CUSTOM"}
+    expected_roles = {role.value for role in RoleType}
     if roles != expected_roles:
         raise ValueError(f"Role coverage mismatch: {sorted(roles)}")
     joined = "\n".join(str(item) for item in ids)

@@ -92,9 +92,9 @@ test("two synthetic-mic participants receive floor, captions, and recap", async 
       }),
     );
 
-    const unmute = firstPage.getByRole("button", { name: "Unmute" });
-    await expect(unmute).toBeEnabled();
-    await unmute.click();
+    const microphoneControl = firstPage.getByRole("button", { name: /^(mute|unmute)$/i });
+    await expect(microphoneControl).toBeEnabled();
+    if ((await microphoneControl.innerText()).trim() === "Unmute") await microphoneControl.click();
     await expect(firstPage.getByText("You own the floor")).toBeVisible();
     await expect(secondPage.getByRole("button", { name: "Hand raised" })).toBeDisabled();
     await expect

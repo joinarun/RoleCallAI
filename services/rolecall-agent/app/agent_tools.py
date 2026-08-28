@@ -68,6 +68,7 @@ def get_meeting_state() -> dict[str, Any]:
             "type": occurrence.current_floor_type.value,
             "slotId": occurrence.current_floor_slot_id,
         },
+        "nextFloorSlotId": occurrence.next_floor_slot_id,
         "handRaiseQueue": occurrence.hand_raise_queue,
     }
 
@@ -101,7 +102,7 @@ def give_floor(slot_id: str, prompt: str) -> dict[str, Any]:
 
 
 def advance_floor() -> dict[str, Any]:
-    """Advance according to controller turn order and queued hand raises."""
+    """Return floor to the agent and select the next connected seat deterministically."""
     scope = _scope()
     try:
         occurrence = scope.meetings.advance_floor(scope.occurrence_id)
@@ -111,6 +112,7 @@ def advance_floor() -> dict[str, Any]:
         "status": "ok",
         "floorType": occurrence.current_floor_type.value,
         "floorSlotId": occurrence.current_floor_slot_id,
+        "nextFloorSlotId": occurrence.next_floor_slot_id,
         "sequence": occurrence.sequence,
     }
 

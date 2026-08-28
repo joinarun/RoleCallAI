@@ -118,6 +118,7 @@ async def test_livekit_floor_enforcement_and_recap_message_are_server_scoped(
         room.slots[0].id,
         JoinRequest(name="Ada", consent_version="v1", connection_id="connection-ada"),
     )
+    container.settings.env = "local"
     livekit = LiveKitService(container.settings)
     room_api = FakeRoomApi(existing=True)
     client = FakeClient(room_api)

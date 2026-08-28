@@ -1,4 +1,17 @@
-export type RoleType = "SCRUM_MASTER" | "FUN_FRIDAY" | "BRAINSTORM" | "CUSTOM";
+export type RoleType =
+  | "SCRUM_MASTER"
+  | "FUN_FRIDAY"
+  | "BRAINSTORM"
+  | "SPRINT_RETROSPECTIVE"
+  | "PROJECT_STATUS"
+  | "INCIDENT_RESPONSE"
+  | "COURSE_INSTRUCTOR"
+  | "WORKSHOP_FACILITATOR"
+  | "TECHNICAL_INTERVIEWER"
+  | "PRODUCT_DISCOVERY"
+  | "DECISION_MAKING"
+  | "TOWN_HALL"
+  | "CUSTOM";
 export type GameType = "AUTO" | "RAPID_FIRE_TRIVIA" | "WOULD_YOU_RATHER" | "CATEGORIES";
 export type OccurrenceStatus =
   | "LOBBY"
@@ -13,6 +26,7 @@ export interface Seat {
   id: string;
   ordinal: number;
   lastDisplayName?: string | null;
+  canEndMeeting: boolean;
 }
 
 export interface Room {
@@ -46,6 +60,8 @@ export interface Attendance {
   joinedAt: string;
   connected: boolean;
   connectionId: string;
+  disconnectedAt?: string | null;
+  leftAt?: string | null;
   absent: boolean;
 }
 
@@ -63,7 +79,10 @@ export interface Occurrence {
   turnOrder: string[];
   currentFloorType: "AGENT" | "SEAT" | "NONE";
   currentFloorSlotId?: string | null;
+  nextFloorSlotId?: string | null;
+  floorEpoch: number;
   handRaiseQueue: string[];
+  endMeetingSlotIds: string[];
   recap?: Recap | null;
   sequence: number;
 }
@@ -83,6 +102,7 @@ export interface JoinResponse {
   agentName: string;
   expectedParticipants: number;
   connectionId: string;
+  canEndMeeting: boolean;
 }
 
 export interface Caption {

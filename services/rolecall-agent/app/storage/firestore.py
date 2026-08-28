@@ -214,6 +214,27 @@ class FirestoreRepository:
 
         return _run_contentious_transaction(self.client, update)
 
+    def set_seat_end_meeting_permission(
+        self, room_id: str, slot_id: str, allowed: bool, updated_at: datetime
+    ) -> Room:
+        room_ref = self.rooms.document(room_id)
+
+        @transactional
+        def update(txn):  # type: ignore[no-untyped-def]
+            snapshot = room_ref.get(transaction=txn)
+            if not snapshot.exists:
+                raise NotFoundError("Room not found")
+            room = Room.model_validate(snapshot.to_dict())
+            slot = next((item for item in room.slots if item.id == slot_id), None)
+            if slot is None:
+                raise NotFoundError("Seat not found")
+            slot.can_end_meeting = allowed
+            room.updated_at = updated_at
+            txn.set(room_ref, _data(room))
+            return room
+
+        return _run_contentious_transaction(self.client, update)
+
     def delete_room(self, room_id: str) -> None:
         room = self.get_room(room_id)
         batch = self.client.batch()

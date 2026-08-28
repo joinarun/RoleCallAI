@@ -19,9 +19,12 @@ from app.domain.models import (
     CapabilityClaims,
     CapabilityExchangeRequest,
     CapabilityExchangeResponse,
+    EndMeetingPermissionRequest,
+    EndMeetingRequest,
     HistoryItem,
     JoinRequest,
     JoinResponse,
+    LeaveRequest,
     ParticipantRoomView,
     RefreshRequest,
     RoomCreate,
@@ -157,6 +160,28 @@ def regenerate_seat(request: Request, room_id: str, slot_id: str) -> dict[str, s
     return {"url": _container(request).rooms.regenerate_seat(room_id, slot_id)}
 
 
+@router.put(
+    "/rooms/{room_id}/slots/{slot_id}:end-meeting-permission",
+    response_model=RoomView,
+)
+async def set_end_meeting_permission(
+    request: Request,
+    room_id: str,
+    slot_id: str,
+    payload: EndMeetingPermissionRequest,
+) -> RoomView:
+    claims = _claims(request)
+    _authorize_room(claims, room_id, CapabilityKind.ADMIN)
+    container = _container(request)
+    room_view = container.rooms.set_end_meeting_permission(room_id, slot_id, payload.allowed)
+    active = container.repository.get_active_occurrence(room_id)
+    if active is not None:
+        await container.livekit.publish_message(
+            active, "meeting.state", active.model_dump(mode="json")
+        )
+    return room_view
+
+
 @router.post("/rooms/{room_id}:join", response_model=JoinResponse)
 async def join_room(request: Request, room_id: str, payload: JoinRequest) -> JoinResponse:
     claims = _claims(request)
@@ -169,6 +194,7 @@ async def join_room(request: Request, room_id: str, payload: JoinRequest) -> Joi
     if occurrence.status in {OccurrenceStatus.RUNNING, OccurrenceStatus.ENDING}:
         await container.livekit.dispatch_agent(occurrence)
     room = container.repository.get_room(room_id)
+    seat = next(item for item in room.slots if item.id == claims.slot_id)
     return JoinResponse(
         occurrence=occurrence,
         livekit_url=container.settings.livekit_url,
@@ -178,6 +204,7 @@ async def join_room(request: Request, room_id: str, payload: JoinRequest) -> Joi
         agent_name=room.agent_name,
         expected_participants=room.expected_participants,
         connection_id=payload.connection_id,
+        can_end_meeting=seat.can_end_meeting,
     )
 
 
@@ -198,6 +225,7 @@ async def refresh_room_token(
     if attendance is None:
         raise ForbiddenError("Join the occurrence before refreshing")
     room = container.repository.get_room(room_id)
+    seat = next(item for item in room.slots if item.id == claims.slot_id)
     return JoinResponse(
         occurrence=occurrence,
         livekit_url=container.settings.livekit_url,
@@ -209,6 +237,7 @@ async def refresh_room_token(
         agent_name=room.agent_name,
         expected_participants=room.expected_participants,
         connection_id=attendance.connection_id,
+        can_end_meeting=seat.can_end_meeting,
     )
 
 
@@ -245,6 +274,60 @@ def hand_raise(request: Request, occurrence_id: str):  # type: ignore[no-untyped
     if occurrence.room_id != claims.room_id:
         raise ForbiddenError("Capability does not grant access to this occurrence")
     return _container(request).meetings.raise_hand(occurrence_id, claims.slot_id)
+
+
+@router.post("/occurrences/{occurrence_id}:leave")
+async def leave_occurrence(request: Request, occurrence_id: str, payload: LeaveRequest):  # type: ignore[no-untyped-def]
+    claims = _claims(request)
+    if claims.kind != CapabilityKind.SEAT or not claims.slot_id:
+        raise ForbiddenError("Seat capability required")
+    container = _container(request)
+    occurrence = container.repository.get_occurrence(occurrence_id)
+    if occurrence.room_id != claims.room_id:
+        raise ForbiddenError("Capability does not grant access to this occurrence")
+    occurrence = container.meetings.leave(occurrence_id, claims.slot_id, payload.connection_id)
+    await container.livekit.enforce_floor(occurrence)
+    await container.livekit.publish_message(
+        occurrence, "meeting.state", occurrence.model_dump(mode="json")
+    )
+    return occurrence
+
+
+@router.post("/occurrences/{occurrence_id}:end")
+async def end_occurrence(
+    request: Request,
+    occurrence_id: str,
+    payload: EndMeetingRequest | None = None,
+):  # type: ignore[no-untyped-def]
+    claims = _claims(request)
+    container = _container(request)
+    occurrence = container.repository.get_occurrence(occurrence_id)
+    if occurrence.room_id != claims.room_id:
+        raise ForbiddenError("Capability does not grant access to this occurrence")
+
+    reason = "ended_by_admin"
+    if claims.kind == CapabilityKind.SEAT:
+        if not claims.slot_id:
+            raise ForbiddenError("Seat capability required")
+        room = container.repository.get_room(occurrence.room_id)
+        seat = next((item for item in room.slots if item.id == claims.slot_id), None)
+        attendance = occurrence.attendance.get(claims.slot_id)
+        if not seat or not seat.can_end_meeting or not attendance or not attendance.connected:
+            raise ForbiddenError("This participant cannot end the meeting for everyone")
+        reason = "ended_by_delegated_participant"
+    elif claims.kind != CapabilityKind.ADMIN:
+        raise ForbiddenError("Admin or delegated participant capability required")
+
+    if payload and payload.reason.startswith("agent_"):
+        # Preserve the operational meaning of agent_* failure reasons for the
+        # worker only; public callers cannot manufacture a worker failure.
+        raise ForbiddenError("Reserved meeting end reason")
+    occurrence = container.meetings.finish(occurrence_id, reason)
+    await container.livekit.enforce_floor(occurrence)
+    await container.livekit.publish_message(
+        occurrence, "meeting.state", occurrence.model_dump(mode="json")
+    )
+    return occurrence
 
 
 @router.get("/occurrences/{occurrence_id}/recap")

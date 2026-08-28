@@ -2,6 +2,8 @@
 
 RoleCallAI is a browser-based, voice-only meeting room led by a configurable Google ADK agent. The deterministic meeting controller owns the clock, lifecycle, turn order, and LiveKit publish permissions; Gemini supplies the facilitator's language and judgment.
 
+The UI provides twelve built-in facilitator roles plus Custom, participant leave controls, admin/delegated end-for-everyone controls, and a remembered microphone check that is requested again only when browser access is unavailable.
+
 This repository is the Phase 1 development monorepo. It contains:
 
 - `apps/web` — React/Vite/TypeScript admin and participant UI.

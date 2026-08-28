@@ -9,12 +9,15 @@ const decoder = new TextDecoder();
 export function useLiveMeeting(join: JoinResponse) {
   const roomRef = useRef<LiveKitRoom | null>(null);
   const allowRecoveryRef = useRef(true);
+  const wantsMicRef = useRef(true);
   const [connection, setConnection] = useState<"connecting" | "connected" | "reconnecting" | "disconnected">("connecting");
   const [occurrence, setOccurrence] = useState(join.occurrence);
   const [captions, setCaptions] = useState<Caption[]>([]);
   const [recap, setRecap] = useState<Recap | null>(join.occurrence.recap ?? null);
   const [micEnabled, setMicEnabled] = useState(false);
   const [micAllowed, setMicAllowed] = useState(false);
+  const [mediaError, setMediaError] = useState("");
+  const [left, setLeft] = useState(false);
 
   useEffect(() => {
     const room = new LiveKitRoom({ adaptiveStream: true, dynacast: false });
@@ -28,6 +31,14 @@ export function useLiveMeeting(join: JoinResponse) {
       setMicAllowed(allowed);
       if (!allowed) {
         void room.localParticipant.setMicrophoneEnabled(false).finally(() => setMicEnabled(false));
+      } else if (wantsMicRef.current) {
+        void room.localParticipant.setMicrophoneEnabled(true).then(() => {
+          setMicEnabled(true);
+          setMediaError("");
+        }).catch(() => {
+          setMicEnabled(false);
+          setMediaError("Your microphone is unavailable. Check browser permission, then unmute.");
+        });
       }
     }
     function onTrackSubscribed(track: RemoteTrack) {
@@ -126,8 +137,15 @@ export function useLiveMeeting(join: JoinResponse) {
     const room = roomRef.current;
     if (!room || !micAllowed) return;
     const next = !micEnabled;
-    await room.localParticipant.setMicrophoneEnabled(next);
-    setMicEnabled(next);
+    wantsMicRef.current = next;
+    try {
+      await room.localParticipant.setMicrophoneEnabled(next);
+      setMicEnabled(next);
+      setMediaError("");
+    } catch {
+      setMicEnabled(false);
+      setMediaError("Your microphone is unavailable. Check browser permission and try again.");
+    }
   }, [micAllowed, micEnabled]);
 
   const raiseHand = useCallback(async () => {
@@ -137,5 +155,28 @@ export function useLiveMeeting(join: JoinResponse) {
     await room.localParticipant.publishData(encoder.encode(JSON.stringify(message)), { reliable: true, topic: "rolecall.v1" });
   }, [occurrence.id, occurrence.sequence]);
 
-  return { connection, occurrence, setOccurrence, captions, recap, micEnabled, micAllowed, toggleMic, raiseHand };
+  const leaveMeeting = useCallback(async () => {
+    allowRecoveryRef.current = false;
+    wantsMicRef.current = false;
+    setLeft(true);
+    const room = roomRef.current;
+    try {
+      await room?.localParticipant.setMicrophoneEnabled(false);
+    } catch {
+      // Continue leaving even if the browser has already removed the track.
+    }
+    setMicEnabled(false);
+    try {
+      const updated = await api<Occurrence>(`/v1/occurrences/${occurrence.id}:leave`, {
+        method: "POST",
+        ...jsonBody({ connectionId: join.connectionId }),
+      });
+      setOccurrence(updated);
+    } finally {
+      await room?.disconnect();
+      setConnection("disconnected");
+    }
+  }, [join.connectionId, occurrence.id]);
+
+  return { connection, occurrence, setOccurrence, captions, recap, micEnabled, micAllowed, mediaError, left, toggleMic, raiseHand, leaveMeeting };
 }

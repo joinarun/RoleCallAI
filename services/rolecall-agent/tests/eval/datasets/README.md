@@ -1,7 +1,7 @@
 # RoleCallAI Phase 1 evaluation
 
-`basic-dataset.json` is the default `agents-cli` N+1 dataset. Its ten
-multi-turn cases cover all four roles, stable-seat memory, absent and late
+`basic-dataset.json` is the default `agents-cli` N+1 dataset. Its nineteen
+multi-turn cases cover all twelve built-in roles plus Custom, stable-seat memory, absent and late
 participants, floor and timing control, brainstorm clustering and materialization,
 unsupported claims, and secret/cross-room isolation.
 

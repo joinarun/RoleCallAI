@@ -16,7 +16,8 @@ from app.domain.models import (
     TranscriptSegment,
 )
 from app.domain.normalization import normalize_room_name
-from app.live.audio import Pcm16FrameBuffer, frame_pcm16, resample_pcm16
+from app.domain.roles import ROLE_PROMPTS
+from app.live.audio import FloorAudioFramer, Pcm16FrameBuffer, frame_pcm16, resample_pcm16
 
 
 def create_room(container: Container, name: str = "Daily Sync", participants: int = 2):
@@ -56,6 +57,13 @@ def test_room_validation_boundaries() -> None:
             role="SCRUM_MASTER",
             agent_name="Nova",
         )
+
+
+def test_every_builtin_role_has_substantial_trusted_guidance() -> None:
+    assert set(ROLE_PROMPTS) == set(RoleType)
+    for role, prompt in ROLE_PROMPTS.items():
+        assert len(prompt) >= 120, role
+        assert "At the end" in prompt or role == RoleType.CUSTOM
 
 
 def test_capabilities_are_hashed_exchanged_and_revoked(container: Container) -> None:
@@ -190,13 +198,18 @@ def test_floor_transitions_hand_raise_disconnect_hold_and_timer(container: Conta
     with pytest.raises(ConflictError, match="advance_floor"):
         container.meetings.give_floor(occurrence.id, room.slots[1].id, "Skip rotation")
     container.meetings.raise_hand(occurrence.id, room.slots[1].id)
-    next_floor = container.meetings.advance_floor(occurrence.id)
-    assert next_floor.current_floor_slot_id == room.slots[1].id
+    handoff = container.meetings.advance_floor(occurrence.id)
+    assert handoff.current_floor_type == FloorOwnerType.AGENT
+    assert handoff.current_floor_slot_id is None
+    assert handoff.next_floor_slot_id == room.slots[1].id
+    container.meetings.give_floor(occurrence.id, room.slots[1].id, "What is your update?")
     container.meetings.disconnect(occurrence.id, room.slots[1].id, now)
     held = container.meetings.tick(occurrence.id, now + timedelta(seconds=29))
     assert held.current_floor_slot_id == room.slots[1].id
     skipped = container.meetings.tick(occurrence.id, now + timedelta(seconds=30))
-    assert skipped.current_floor_slot_id == room.slots[0].id
+    assert skipped.current_floor_type == FloorOwnerType.AGENT
+    assert skipped.current_floor_slot_id is None
+    assert skipped.next_floor_slot_id == room.slots[0].id
     running_sequence = skipped.sequence
     ending = container.meetings.tick(occurrence.id, now + timedelta(minutes=3))
     assert ending.status == OccurrenceStatus.ENDING
@@ -223,6 +236,34 @@ def test_reconnect_requires_the_original_connection_identity(container: Containe
     reconnected = container.meetings.reconnect(room.id, room.slots[0].id, "connection-original")
     assert reconnected.attendance[room.slots[0].id].connected
     assert reconnected.sequence > disconnected.sequence
+
+
+def test_intentional_leave_skips_floor_and_finishes_when_last_person_leaves(
+    container: Container,
+) -> None:
+    created = create_room(container)
+    room = container.repository.get_room(created.room.id)
+    first = container.meetings.join(
+        room.id,
+        room.slots[0].id,
+        JoinRequest(name="One", consent_version="v1", connection_id="connection-one"),
+    )
+    occurrence = container.meetings.join(
+        room.id,
+        room.slots[1].id,
+        JoinRequest(name="Two", consent_version="v1", connection_id="connection-two"),
+    )
+    container.meetings.give_floor(first.id, room.slots[0].id, "Your update?")
+
+    left = container.meetings.leave(occurrence.id, room.slots[0].id, "connection-one")
+    assert left.current_floor_type == FloorOwnerType.AGENT
+    assert left.next_floor_slot_id == room.slots[1].id
+    assert left.attendance[room.slots[0].id].left_at is not None
+    with pytest.raises(ConflictError, match="identity"):
+        container.meetings.leave(occurrence.id, room.slots[1].id, "wrong-connection")
+
+    finished = container.meetings.leave(occurrence.id, room.slots[1].id, "connection-two")
+    assert finished.status == OccurrenceStatus.PROCESSING
 
 
 def test_finish_outbox_is_idempotent_and_does_not_reset_published_state(
@@ -282,6 +323,16 @@ def test_pcm_resampling_and_framing() -> None:
     assert buffer.push(b"\0\0" * 320) == []
     buffered = buffer.push(b"\0\0" * 960)
     assert [len(frame) for frame in buffered] == [frame_bytes]
+
+    floor_buffer = FloorAudioFramer(sample_rate=16000, frame_ms=80)
+    chunks = [b"\0\0" * 160 for _ in range(8)]
+    scoped = [frame for chunk in chunks for frame in floor_buffer.push("seat-1", 7, chunk)]
+    assert len(scoped) == 1
+    assert scoped[0].slot_id == "seat-1"
+    assert scoped[0].floor_epoch == 7
+    # A floor handoff discards a partial frame instead of leaking it to the next speaker.
+    floor_buffer.push("seat-1", 7, b"\0\0" * 160)
+    assert floor_buffer.push("seat-2", 8, b"\0\0" * 1120) == []
 
 
 def test_final_transcript_expiry(container: Container) -> None:

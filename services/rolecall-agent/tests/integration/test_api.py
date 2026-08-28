@@ -139,3 +139,123 @@ def test_refresh_reconnects_only_the_original_browser_connection(container: Cont
             occurrence_id,
             occurrence_id,
         ]
+
+
+def test_admin_delegates_end_meeting_and_only_authorized_seat_can_use_it(
+    container: Container,
+) -> None:
+    with TestClient(app) as creator:
+        app.state.container = container
+        created = creator.post("/v1/rooms", json=room_payload("Delegated controls")).json()
+        room_id = created["room"]["id"]
+
+        admin = TestClient(app)
+        app.state.container = container
+        exchange(admin, room_id, created["adminUrl"])
+
+        participants: list[TestClient] = []
+        joins: list[dict] = []
+        for index, invitation in enumerate(created["seatUrls"], start=1):
+            participant = TestClient(app)
+            app.state.container = container
+            exchange(participant, room_id, invitation["url"])
+            joined = participant.post(
+                f"/v1/rooms/{room_id}:join",
+                json={
+                    "name": f"Person {index}",
+                    "consentVersion": "v1",
+                    "connectionId": f"control-connection-{index}",
+                },
+            )
+            assert joined.status_code == 200, joined.text
+            participants.append(participant)
+            joins.append(joined.json())
+
+        occurrence_id = joins[-1]["occurrence"]["id"]
+        delegated_slot = joins[0]["slotId"]
+        permission = admin.put(
+            f"/v1/rooms/{room_id}/slots/{delegated_slot}:end-meeting-permission",
+            json={"allowed": True},
+        )
+        assert permission.status_code == 200, permission.text
+        assert (
+            next(slot for slot in permission.json()["slots"] if slot["id"] == delegated_slot)[
+                "canEndMeeting"
+            ]
+            is True
+        )
+        state = participants[0].get(f"/v1/occurrences/{occurrence_id}/state").json()
+        assert delegated_slot in state["endMeetingSlotIds"]
+
+        rejected = participants[1].post(f"/v1/occurrences/{occurrence_id}:end")
+        assert rejected.status_code == 403
+        revoked = admin.put(
+            f"/v1/rooms/{room_id}/slots/{delegated_slot}:end-meeting-permission",
+            json={"allowed": False},
+        )
+        assert revoked.status_code == 200
+        assert participants[0].post(f"/v1/occurrences/{occurrence_id}:end").status_code == 403
+        admin.put(
+            f"/v1/rooms/{room_id}/slots/{delegated_slot}:end-meeting-permission",
+            json={"allowed": True},
+        )
+        ended = participants[0].post(f"/v1/occurrences/{occurrence_id}:end")
+        assert ended.status_code == 200, ended.text
+        assert ended.json()["status"] == "PROCESSING"
+        assert container.livekit.enforced[-1] == occurrence_id  # type: ignore[attr-defined]
+        assert container.livekit.published[-1] == (occurrence_id, "meeting.state")  # type: ignore[attr-defined]
+
+
+def test_participant_can_intentionally_leave_without_reconnect_hold(container: Container) -> None:
+    with TestClient(app) as creator:
+        app.state.container = container
+        created = creator.post("/v1/rooms", json=room_payload("Leave control")).json()
+        room_id = created["room"]["id"]
+        participant = TestClient(app)
+        app.state.container = container
+        exchange(participant, room_id, created["seatUrls"][0]["url"])
+        joined = participant.post(
+            f"/v1/rooms/{room_id}:join",
+            json={
+                "name": "Leaver",
+                "consentVersion": "v1",
+                "connectionId": "leaving-connection",
+            },
+        ).json()
+
+        rejected = participant.post(
+            f"/v1/occurrences/{joined['occurrence']['id']}:leave",
+            json={"connectionId": "wrong-connection"},
+        )
+        assert rejected.status_code == 409
+        left = participant.post(
+            f"/v1/occurrences/{joined['occurrence']['id']}:leave",
+            json={"connectionId": "leaving-connection"},
+        )
+        assert left.status_code == 200, left.text
+        assert left.json()["status"] == "PROCESSING"
+
+
+def test_admin_can_end_a_lobby_for_everyone(container: Container) -> None:
+    with TestClient(app) as creator:
+        app.state.container = container
+        created = creator.post("/v1/rooms", json=room_payload("Admin end lobby")).json()
+        room_id = created["room"]["id"]
+        admin = TestClient(app)
+        app.state.container = container
+        exchange(admin, room_id, created["adminUrl"])
+        participant = TestClient(app)
+        app.state.container = container
+        exchange(participant, room_id, created["seatUrls"][0]["url"])
+        joined = participant.post(
+            f"/v1/rooms/{room_id}:join",
+            json={
+                "name": "Waiting person",
+                "consentVersion": "v1",
+                "connectionId": "admin-end-connection",
+            },
+        ).json()
+
+        ended = admin.post(f"/v1/occurrences/{joined['occurrence']['id']}:end")
+        assert ended.status_code == 200, ended.text
+        assert ended.json()["status"] == "PROCESSING"
