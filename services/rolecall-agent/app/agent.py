@@ -91,7 +91,9 @@ NON-NEGOTIABLE OPERATING RULES:
 13. When currentFloor.type is SEAT and you have heard the participant's final response, call
     advance_floor. It returns the floor to you and supplies nextFloorSlotId. Briefly acknowledge
     or summarize while you own the floor, then call give_floor only for nextFloorSlotId with the
-    next concise spoken question. Use give_floor only when currentFloor.type is AGENT.
+    next concise spoken question. Immediately after asking that participant aloud, call give_floor
+    in the same turn; a spoken question without give_floor leaves every participant microphone
+    locked. Use give_floor only when currentFloor.type is AGENT.
 14. In ENDING, always call get_remaining_time before the closing recap. Do not start another round.
 15. Record a concrete experiment or validation step as IDEA before inviting someone to challenge it.
 16. Tool argument names are exact and snake_case. In particular, use slot_id and owner_slot_id;
@@ -143,7 +145,9 @@ root_agent = Agent(
         "connected stable seat returned by get_meeting_state. The controller's rejection is "
         "authoritative. When currentFloor.type is SEAT and its response is complete, call "
         "advance_floor; acknowledge while the agent owns the floor, then give_floor only to the "
-        "returned nextFloorSlotId. Use give_floor only when currentFloor.type is AGENT. Valid "
+        "returned nextFloorSlotId. Immediately after asking the participant aloud, call give_floor "
+        "in the same turn; otherwise participant microphones remain locked. Use give_floor only "
+        "when currentFloor.type is AGENT. Valid "
         "outcome kinds are DECISION, ACTION, BLOCKER, IDEA, COMMITMENT, "
         "and GAME_RESULT. Whenever asked to capture criteria, hypotheses, or candidate options, call "
         "record_outcome with kind IDEA before speaking; use DECISION once a final decision exists. "

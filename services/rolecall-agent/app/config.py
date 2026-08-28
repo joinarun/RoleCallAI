@@ -47,6 +47,7 @@ class Settings(BaseSettings):
     disconnect_hold_seconds: int = 30
     agent_recovery_seconds: int = 60
     agent_response_watchdog_seconds: int = 6
+    agent_handoff_watchdog_seconds: int = 3
     human_turn_silence_ms: int = 2000
     wrap_up_seconds: int = 120
     closing_grace_seconds: int = 60

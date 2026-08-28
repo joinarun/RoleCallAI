@@ -21,13 +21,20 @@ from app.agent_tools import MeetingToolScope, bind_meeting_scope
 from app.app_utils import services as adk_services
 from app.config import get_settings
 from app.domain.enums import FloorOwnerType
+from app.domain.errors import RoleCallError
 from app.domain.models import LiveKitMessage, TranscriptSegment
 from app.jobs.outbox import publish_outbox_record
 from app.live.adk_session import live_run_config
 from app.live.audio import FloorAudioFrame, FloorAudioFramer
+from app.live.handoff import select_recovery_slot
 from app.live.playout import DeferredFinishCoordinator, drain_audio_playout
 from app.live.transcription import TranscriptAccumulator
-from app.live.watchdog import AgentResponseWatchdog, WatchdogAction
+from app.live.watchdog import (
+    AgentHandoffWatchdog,
+    AgentResponseWatchdog,
+    HandoffAction,
+    WatchdogAction,
+)
 from app.observability import configure_observability
 from app.retrieval.memory import RoomMemoryService
 from app.services.livekit import LiveKitService
@@ -79,6 +86,9 @@ async def meeting_entrypoint(ctx: JobContext) -> None:
         response_timeout_seconds=settings.agent_response_watchdog_seconds,
         recovery_timeout_seconds=settings.agent_recovery_seconds,
     )
+    handoff_watchdog = AgentHandoffWatchdog(
+        handoff_timeout_seconds=settings.agent_handoff_watchdog_seconds,
+    )
     tool_scope = MeetingToolScope(
         occurrence_id=occurrence_id,
         repository=repository,
@@ -110,6 +120,7 @@ async def meeting_entrypoint(ctx: JobContext) -> None:
     last_gap_log_at = datetime.min.replace(tzinfo=UTC)
     last_human_final_at: float | None = None
     last_human_audio_slot_id: str | None = None
+    last_agent_caption = ""
     last_controller_heartbeat = time.monotonic()
     audio_stream_open = False
     # The controller refreshes this snapshot at 2 Hz. Audio callbacks must not
@@ -262,7 +273,7 @@ async def meeting_entrypoint(ctx: JobContext) -> None:
     async def persist_caption(
         speaker_type: FloorOwnerType, speaker_id: str, speaker_name: str, text: str
     ) -> None:
-        nonlocal last_human_final_at
+        nonlocal last_agent_caption, last_human_final_at
         existing_segments = await asyncio.to_thread(
             repository.list_transcript_segments, occurrence_id
         )
@@ -284,6 +295,8 @@ async def meeting_entrypoint(ctx: JobContext) -> None:
         await publish_message("caption.final", segment.model_dump(mode="json"))
         if speaker_type == FloorOwnerType.SEAT:
             last_human_final_at = time.perf_counter()
+        elif speaker_type == FloorOwnerType.AGENT:
+            last_agent_caption = segment.text
 
     async def run_adk() -> None:
         nonlocal last_human_final_at
@@ -382,6 +395,7 @@ async def meeting_entrypoint(ctx: JobContext) -> None:
                                 )
                                 last_human_final_at = None
                             recovered_after = response_watchdog.note_agent_audio()
+                            handoff_watchdog.note_agent_activity(time.monotonic())
                             if recovered_after:
                                 logger.info(
                                     "event=agent_response_watchdog_recovered occurrence_id=%s attempts=%d",
@@ -487,6 +501,17 @@ async def meeting_entrypoint(ctx: JobContext) -> None:
                 current.floor_epoch,
                 heartbeat_at,
             )
+            playout_idle = output_frames.empty() and output_source.queued_duration <= 0.05
+            handoff_watchdog.observe(
+                agent_owns_floor=(
+                    current.current_floor_type == FloorOwnerType.AGENT
+                    and current.status.active
+                    and not deferred_finish.requested
+                ),
+                completed_turns=deferred_finish.completed_turns,
+                playout_idle=playout_idle,
+                now=heartbeat_at,
+            )
             if current.sequence != last_sequence:
                 last_sequence = current.sequence
                 if current.floor_epoch != last_floor_epoch:
@@ -550,6 +575,84 @@ async def meeting_entrypoint(ctx: JobContext) -> None:
                 await publish_postprocess_now()
                 stop.set()
                 return
+            handoff_decision = handoff_watchdog.poll(
+                heartbeat_at,
+                playout_idle=playout_idle,
+            )
+            if handoff_decision and handoff_decision.action == HandoffAction.NUDGE:
+                logger.warning(
+                    "event=agent_handoff_watchdog_nudge occurrence_id=%s attempt=%d",
+                    occurrence_id,
+                    handoff_decision.attempt,
+                )
+                if current.status.value == "ENDING":
+                    recovery_text = (
+                        "Controller recovery signal: your spoken turn completed but the meeting "
+                        "is still ENDING. Call get_remaining_time and finish_meeting now. Do not "
+                        "repeat the closing recap."
+                    )
+                else:
+                    recovery_text = (
+                        "Controller recovery signal: your spoken question completed but every "
+                        "participant microphone is still locked because you did not hand off the "
+                        "floor. Call get_meeting_state, then immediately call give_floor for the "
+                        "connected participant you just addressed. Do not speak or repeat the question."
+                    )
+                request_queue.send_content(
+                    types.Content(role="user", parts=[types.Part(text=recovery_text)])
+                )
+            elif handoff_decision and handoff_decision.action == HandoffAction.FALLBACK:
+                if current.status.value == "ENDING":
+                    logger.error(
+                        "event=agent_handoff_watchdog_fallback occurrence_id=%s strategy=finish",
+                        occurrence_id,
+                    )
+                    current = await asyncio.to_thread(
+                        meetings.finish, occurrence_id, "agent_handoff_timeout"
+                    )
+                    await livekit.enforce_floor(current)
+                    await publish_message("meeting.state", current.model_dump(mode="json"))
+                    await publish_postprocess_now()
+                    stop.set()
+                    return
+                target_slot_id, strategy = select_recovery_slot(
+                    current.turn_order,
+                    current.attendance,
+                    current.next_floor_slot_id,
+                    last_agent_caption,
+                )
+                if target_slot_id is None:
+                    logger.error(
+                        "event=agent_handoff_watchdog_fallback occurrence_id=%s strategy=%s",
+                        occurrence_id,
+                        strategy,
+                    )
+                    current = await asyncio.to_thread(
+                        meetings.finish, occurrence_id, "no_connected_handoff_target"
+                    )
+                    await publish_postprocess_now()
+                    stop.set()
+                    return
+                logger.warning(
+                    "event=agent_handoff_watchdog_fallback occurrence_id=%s strategy=%s",
+                    occurrence_id,
+                    strategy,
+                )
+                try:
+                    await asyncio.to_thread(
+                        meetings.give_floor,
+                        occurrence_id,
+                        target_slot_id,
+                        "Please answer the facilitator's last question.",
+                    )
+                except RoleCallError as exc:
+                    # A late model tool call can win the race with this fallback.
+                    # The next controller tick will publish and enforce that state.
+                    logger.info(
+                        "event=agent_handoff_watchdog_race occurrence_id=%s error_type=%s",
+                        occurrence_id,
+                        type(exc).__name__,
+                    )
             await asyncio.sleep(0.5)
 
     tasks = {

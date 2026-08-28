@@ -2,8 +2,14 @@ from __future__ import annotations
 
 from app.config import get_settings
 from app.live.adk_session import live_run_config
+from app.live.handoff import select_recovery_slot
 from app.live.transcription import TranscriptAccumulator
-from app.live.watchdog import AgentResponseWatchdog, WatchdogAction
+from app.live.watchdog import (
+    AgentHandoffWatchdog,
+    AgentResponseWatchdog,
+    HandoffAction,
+    WatchdogAction,
+)
 
 
 def test_transcript_accumulator_merges_cumulative_and_delta_events() -> None:
@@ -51,3 +57,62 @@ def test_agent_response_watchdog_nudges_recovers_and_times_out() -> None:
     timed_out = watchdog.poll(262)
     assert timed_out and timed_out.action == WatchdogAction.TIMEOUT
     assert watchdog.poll(300) is None
+
+
+def test_agent_handoff_watchdog_waits_for_playout_then_recovers() -> None:
+    watchdog = AgentHandoffWatchdog(3, max_nudges=2)
+    watchdog.observe(
+        agent_owns_floor=True,
+        completed_turns=1,
+        playout_idle=False,
+        now=100,
+    )
+    assert watchdog.poll(120, playout_idle=False) is None
+    watchdog.observe(
+        agent_owns_floor=True,
+        completed_turns=1,
+        playout_idle=True,
+        now=121,
+    )
+    assert watchdog.poll(123.9, playout_idle=True) is None
+    first = watchdog.poll(124, playout_idle=True)
+    assert first and first.action == HandoffAction.NUDGE and first.attempt == 1
+    watchdog.note_agent_activity(125)
+    assert watchdog.poll(127.9, playout_idle=True) is None
+    second = watchdog.poll(128, playout_idle=True)
+    assert second and second.action == HandoffAction.NUDGE and second.attempt == 2
+    fallback = watchdog.poll(131, playout_idle=True)
+    assert fallback and fallback.action == HandoffAction.FALLBACK
+
+    watchdog.observe(
+        agent_owns_floor=False,
+        completed_turns=2,
+        playout_idle=True,
+        now=132,
+    )
+    assert watchdog.poll(200, playout_idle=True) is None
+
+
+class _Attendance:
+    def __init__(self, display_name: str, connected: bool = True) -> None:
+        self.display_name = display_name
+        self.connected = connected
+
+
+def test_handoff_recovery_prefers_prepared_then_last_named_participant() -> None:
+    attendance = {
+        "seat-arun": _Attendance("Arun"),
+        "seat-jaya": _Attendance("Jaya"),
+    }
+    assert select_recovery_slot(
+        ["seat-arun", "seat-jaya"],
+        attendance,
+        "seat-arun",
+        "Welcome Arun and Jaya. Jaya, you're first.",
+    ) == ("seat-arun", "prepared_next_floor")
+    assert select_recovery_slot(
+        ["seat-arun", "seat-jaya"],
+        attendance,
+        None,
+        "Welcome Arun and Jaya. Jaya, you're first.",
+    ) == ("seat-jaya", "last_named_participant")

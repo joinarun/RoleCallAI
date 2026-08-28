@@ -5,6 +5,13 @@ import { chromium, request } from "@playwright/test";
 const baseURL = process.env.ROLECALL_SMOKE_BASE_URL?.replace(/\/$/, "");
 const firstAudio = process.env.ROLECALL_SMOKE_AUDIO_ONE;
 const secondAudio = process.env.ROLECALL_SMOKE_AUDIO_TWO;
+const smokeRole = process.env.ROLECALL_SMOKE_ROLE ?? "SCRUM_MASTER";
+const smokeGame = smokeRole === "FUN_FRIDAY" ? "RAPID_FIRE_TRIVIA" : null;
+const smokeInstructions =
+  process.env.ROLECALL_SMOKE_INSTRUCTIONS ??
+  (smokeRole === "FUN_FRIDAY"
+    ? "Run exactly one concise rapid-fire trivia round. Ask Ben Smoke first and Ada Smoke second, one question each. After both responses, do not open another round. Speak a closing recap with four short, complete numbered sentences, then call finish_meeting as the final action."
+    : "Run exactly one concise stand-up round and ask each participant once. After both responses, do not open another round. Speak a closing recap with four short, complete numbered sentences, then call finish_meeting as the final action.");
 
 if (!baseURL || !firstAudio || !secondAudio) {
   throw new Error(
@@ -104,14 +111,13 @@ try {
   const created = await jsonResponse(
     await publicApi.post("/v1/rooms", {
       data: {
-        name: `Deployed two-person voice smoke ${Date.now()}`,
+        name: `Deployed ${smokeRole.toLowerCase()} voice smoke ${Date.now()}`,
         expectedParticipants: 2,
         durationMinutes: 5,
-        role: "SCRUM_MASTER",
+        role: smokeRole,
         agentName: "Nova",
-        instructions:
-          "Run exactly one concise stand-up round and ask each participant once. After both responses, do not open another round. Speak a closing recap with four short, complete numbered sentences, then call finish_meeting as the final action.",
-        game: null,
+        instructions: smokeInstructions,
+        game: smokeGame,
       },
     }),
     "create smoke room",
