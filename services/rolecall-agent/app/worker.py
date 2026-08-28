@@ -26,6 +26,8 @@ from app.jobs.outbox import publish_outbox_record
 from app.live.adk_session import live_run_config
 from app.live.audio import FloorAudioFrame, FloorAudioFramer
 from app.live.playout import DeferredFinishCoordinator, drain_audio_playout
+from app.live.transcription import TranscriptAccumulator
+from app.live.watchdog import AgentResponseWatchdog, WatchdogAction
 from app.observability import configure_observability
 from app.retrieval.memory import RoomMemoryService
 from app.services.livekit import LiveKitService
@@ -73,6 +75,10 @@ async def meeting_entrypoint(ctx: JobContext) -> None:
     memory = RoomMemoryService(settings)
     livekit = LiveKitService(settings)
     deferred_finish = DeferredFinishCoordinator()
+    response_watchdog = AgentResponseWatchdog(
+        response_timeout_seconds=settings.agent_response_watchdog_seconds,
+        recovery_timeout_seconds=settings.agent_recovery_seconds,
+    )
     tool_scope = MeetingToolScope(
         occurrence_id=occurrence_id,
         repository=repository,
@@ -205,12 +211,14 @@ async def meeting_entrypoint(ctx: JobContext) -> None:
         nonlocal audio_stream_open, last_human_audio_slot_id
         while not stop.is_set():
             try:
-                scoped_frame = await asyncio.wait_for(input_frames.get(), timeout=1.05)
+                scoped_frame = await asyncio.wait_for(
+                    input_frames.get(), timeout=settings.human_turn_silence_ms / 1000
+                )
             except TimeoutError:
                 if audio_stream_open:
-                    # Gemini's automatic VAD expects AudioStreamEnd whenever
-                    # microphone input pauses for about a second. It flushes
-                    # cached speech and still permits later audio to resume.
+                    # Align a muted/stopped browser track with the same quiet
+                    # period used by Gemini VAD. A one-second timeout cut off
+                    # ordinary thinking pauses in real meetings.
                     request_queue.send_audio_stream_end()
                     audio_stream_open = False
                 continue
@@ -235,7 +243,11 @@ async def meeting_entrypoint(ctx: JobContext) -> None:
                 await output_source.capture_frame(frame)
             except Exception as exc:
                 current = await asyncio.to_thread(repository.get_occurrence, occurrence_id)
-                if stop.is_set() or not current.status.active or current.status.value == "PROCESSING":
+                if (
+                    stop.is_set()
+                    or not current.status.active
+                    or current.status.value == "PROCESSING"
+                ):
                     logger.info(
                         "event=audio_playout_closed occurrence_id=%s error_type=%s",
                         occurrence_id,
@@ -296,8 +308,8 @@ async def meeting_entrypoint(ctx: JobContext) -> None:
                 ],
             )
         )
-        input_buffer = ""
-        output_buffer = ""
+        input_buffer = TranscriptAccumulator()
+        output_buffer = TranscriptAccumulator()
         failure_started: datetime | None = None
         while not stop.is_set():
             try:
@@ -309,9 +321,13 @@ async def meeting_entrypoint(ctx: JobContext) -> None:
                         run_config=live_run_config(),
                     ):
                         failure_started = None
-                        if event.input_transcription and event.input_transcription.text:
-                            input_buffer += event.input_transcription.text
-                            if event.input_transcription.finished and input_buffer.strip():
+                        if event.input_transcription:
+                            input_buffer.add(event.input_transcription.text)
+                            if event.input_transcription.finished:
+                                input_text = input_buffer.finish()
+                            else:
+                                input_text = ""
+                            if input_text:
                                 current = repository.get_occurrence(occurrence_id)
                                 slot_id = (
                                     last_human_audio_slot_id
@@ -323,16 +339,23 @@ async def meeting_entrypoint(ctx: JobContext) -> None:
                                     FloorOwnerType.SEAT,
                                     slot_id,
                                     attendance.display_name if attendance else "Participant",
-                                    input_buffer,
+                                    input_text,
                                 )
-                                input_buffer = ""
-                        if event.output_transcription and event.output_transcription.text:
-                            output_buffer += event.output_transcription.text
-                            if event.output_transcription.finished and output_buffer.strip():
+                                logger.info(
+                                    "event=human_turn_final occurrence_id=%s characters=%d",
+                                    occurrence_id,
+                                    len(input_text),
+                                )
+                        if event.output_transcription:
+                            output_buffer.add(event.output_transcription.text)
+                            if event.output_transcription.finished:
+                                output_text = output_buffer.finish()
+                            else:
+                                output_text = ""
+                            if output_text:
                                 await persist_caption(
-                                    FloorOwnerType.AGENT, "agent", room.agent_name, output_buffer
+                                    FloorOwnerType.AGENT, "agent", room.agent_name, output_text
                                 )
-                                output_buffer = ""
                         if event.interrupted:
                             output_source.clear_queue()
                             while not output_frames.empty():
@@ -358,6 +381,13 @@ async def meeting_entrypoint(ctx: JobContext) -> None:
                                     (time.perf_counter() - last_human_final_at) * 1000,
                                 )
                                 last_human_final_at = None
+                            recovered_after = response_watchdog.note_agent_audio()
+                            if recovered_after:
+                                logger.info(
+                                    "event=agent_response_watchdog_recovered occurrence_id=%s attempts=%d",
+                                    occurrence_id,
+                                    recovered_after,
+                                )
                             source_rate = _pcm_rate(blob.mime_type)
                             frame = rtc.AudioFrame(
                                 blob.data,
@@ -452,6 +482,11 @@ async def meeting_entrypoint(ctx: JobContext) -> None:
                 current.current_floor_slot_id,
                 current.floor_epoch,
             )
+            response_watchdog.observe_floor(
+                current.current_floor_type == FloorOwnerType.AGENT,
+                current.floor_epoch,
+                heartbeat_at,
+            )
             if current.sequence != last_sequence:
                 last_sequence = current.sequence
                 if current.floor_epoch != last_floor_epoch:
@@ -477,6 +512,42 @@ async def meeting_entrypoint(ctx: JobContext) -> None:
                 stop.set()
                 return
             if not current.status.active:
+                stop.set()
+                return
+            decision = response_watchdog.poll(heartbeat_at)
+            if decision and decision.action == WatchdogAction.NUDGE:
+                logger.warning(
+                    "event=agent_response_watchdog_nudge occurrence_id=%s attempt=%d",
+                    occurrence_id,
+                    decision.attempt,
+                )
+                request_queue.send_content(
+                    types.Content(
+                        role="user",
+                        parts=[
+                            types.Part(
+                                text=(
+                                    "Controller recovery signal: you own the meeting floor but no "
+                                    "spoken response has started. Call get_meeting_state, briefly "
+                                    "acknowledge the completed participant response, and continue "
+                                    "with nextFloorSlotId. Do not repeat audio already delivered."
+                                )
+                            )
+                        ],
+                    )
+                )
+            elif decision and decision.action == WatchdogAction.TIMEOUT:
+                logger.error(
+                    "event=agent_response_watchdog_timeout occurrence_id=%s attempts=%d",
+                    occurrence_id,
+                    decision.attempt,
+                )
+                current = await asyncio.to_thread(
+                    meetings.finish, occurrence_id, "agent_response_timeout"
+                )
+                await livekit.enforce_floor(current)
+                await publish_message("meeting.state", current.model_dump(mode="json"))
+                await publish_postprocess_now()
                 stop.set()
                 return
             await asyncio.sleep(0.5)

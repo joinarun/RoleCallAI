@@ -46,6 +46,8 @@ class Settings(BaseSettings):
     lobby_early_start_seconds: int = 120
     disconnect_hold_seconds: int = 30
     agent_recovery_seconds: int = 60
+    agent_response_watchdog_seconds: int = 6
+    human_turn_silence_ms: int = 2000
     wrap_up_seconds: int = 120
     closing_grace_seconds: int = 60
     closing_playout_timeout_seconds: int = 45
