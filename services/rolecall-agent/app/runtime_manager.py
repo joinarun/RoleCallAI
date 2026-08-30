@@ -119,7 +119,9 @@ def _set_pool_autoscaling(
                 "locationPolicy": "BALANCED",
             }
         )
-    _gke_post(settings, pool, "setAutoscaling", {"autoscaling": autoscaling})
+    # The zonal v1 REST resource uses `/autoscaling`; `:setAutoscaling` belongs
+    # to the newer projects.locations resource name and returns 404 on this path.
+    _gke_post(settings, pool, "autoscaling", {"autoscaling": autoscaling})
 
 
 def _wait_until(predicate: Callable[[], bool], timeout: int, message: str) -> None:
