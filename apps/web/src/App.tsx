@@ -1,7 +1,6 @@
-import { Routes, Route, Link } from "react-router-dom";
+import { Routes, Route, Link, Navigate } from "react-router-dom";
 import { AudioLines } from "lucide-react";
 import { HomePage } from "./pages/HomePage";
-import { AdminRoomPage } from "./pages/AdminRoomPage";
 import { JoinRoomPage } from "./pages/JoinRoomPage";
 
 function Brand() {
@@ -23,7 +22,7 @@ export default function App() {
       <main id="main-content" tabIndex={-1}>
         <Routes>
           <Route path="/" element={<HomePage />} />
-          <Route path="/manage/:roomId" element={<AdminRoomPage />} />
+          <Route path="/manage/:roomId" element={<Navigate to="/" replace />} />
           <Route path="/join/:roomId" element={<JoinRoomPage />} />
           <Route path="*" element={<div className="empty-state"><h1>That room isn’t here.</h1><Link className="button primary" to="/">Create a room</Link></div>} />
         </Routes>

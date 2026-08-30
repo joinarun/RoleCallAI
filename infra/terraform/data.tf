@@ -17,7 +17,11 @@ resource "google_firestore_database" "rolecall" {
 
 resource "google_firestore_field" "ttl" {
   for_each = toset([
+    "admin_sessions",
     "capability_sessions",
+    "document_chunks",
+    "document_versions",
+    "login_failures",
     "occurrences",
     "transcript_segments",
   ])
@@ -75,6 +79,152 @@ resource "google_firestore_index" "outbox_pending" {
   }
 }
 
+resource "google_firestore_index" "admin_room_list" {
+  project    = var.project_id
+  database   = google_firestore_database.rolecall.name
+  collection = "rooms"
+
+  fields {
+    field_path = "owner_id"
+    order      = "ASCENDING"
+  }
+  fields {
+    field_path = "updated_at"
+    order      = "DESCENDING"
+  }
+}
+
+resource "google_firestore_index" "document_list" {
+  project    = var.project_id
+  database   = google_firestore_database.rolecall.name
+  collection = "documents"
+
+  fields {
+    field_path = "room_id"
+    order      = "ASCENDING"
+  }
+  fields {
+    field_path = "deleted_at"
+    order      = "ASCENDING"
+  }
+  fields {
+    field_path = "created_at"
+    order      = "ASCENDING"
+  }
+}
+
+resource "google_firestore_index" "document_versions" {
+  project    = var.project_id
+  database   = google_firestore_database.rolecall.name
+  collection = "document_versions"
+
+  fields {
+    field_path = "room_id"
+    order      = "ASCENDING"
+  }
+  fields {
+    field_path = "document_id"
+    order      = "ASCENDING"
+  }
+  fields {
+    field_path = "version"
+    order      = "DESCENDING"
+  }
+}
+
+resource "google_firestore_index" "login_throttle" {
+  project    = var.project_id
+  database   = google_firestore_database.rolecall.name
+  collection = "login_failures"
+
+  fields {
+    field_path = "key"
+    order      = "ASCENDING"
+  }
+  fields {
+    field_path = "occurred_at"
+    order      = "ASCENDING"
+  }
+}
+
+resource "google_firestore_index" "document_vector" {
+  project    = var.project_id
+  database   = google_firestore_database.rolecall.name
+  collection = "document_chunks"
+
+  fields {
+    field_path = "room_id"
+    order      = "ASCENDING"
+  }
+  fields {
+    field_path = "version_id"
+    order      = "ASCENDING"
+  }
+  fields {
+    field_path = "embedding"
+    vector_config {
+      dimension = 768
+      flat {}
+    }
+  }
+}
+
+resource "google_storage_bucket" "documents" {
+  name                        = "${var.project_id}-${local.prefix}-documents"
+  location                    = var.region
+  uniform_bucket_level_access = true
+  public_access_prevention    = "enforced"
+  force_destroy               = false
+  labels                      = var.labels
+
+  soft_delete_policy {
+    retention_duration_seconds = 604800
+  }
+
+  lifecycle_rule {
+    condition {
+      age = var.retention_days
+    }
+    action {
+      type = "Delete"
+    }
+  }
+
+  depends_on = [google_project_service.required]
+}
+
+resource "google_kms_key_ring" "rolecall" {
+  name     = local.prefix
+  location = var.region
+
+  depends_on = [google_project_service.required]
+}
+
+resource "google_kms_crypto_key" "seat_links" {
+  name                       = "participant-seat-links"
+  key_ring                   = google_kms_key_ring.rolecall.id
+  rotation_period            = "7776000s"
+  destroy_scheduled_duration = "2592000s"
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+resource "google_recaptcha_enterprise_key" "admin_login" {
+  display_name = "${local.prefix}-admin-login"
+  project      = var.project_id
+  labels       = var.labels
+
+  web_settings {
+    integration_type  = "CHECKBOX"
+    allowed_domains   = [trimprefix(local.control_url, "https://")]
+    allow_all_domains = false
+  }
+
+  depends_on = [google_project_service.required]
+}
+
 resource "google_artifact_registry_repository" "rolecall" {
   location      = var.region
   repository_id = local.artifact_repo
@@ -102,39 +252,6 @@ resource "google_artifact_registry_repository" "rolecall" {
   }
 
   depends_on = [google_project_service.required]
-}
-
-resource "google_redis_instance" "rolecall" {
-  name               = local.prefix
-  region             = var.region
-  tier               = "BASIC"
-  memory_size_gb     = 1
-  redis_version      = "REDIS_7_2"
-  authorized_network = google_compute_network.rolecall.id
-  connect_mode       = "PRIVATE_SERVICE_ACCESS"
-  display_name       = "RoleCallAI development routing and rate limits"
-  labels             = var.labels
-
-  auth_enabled            = false
-  transit_encryption_mode = "DISABLED"
-
-  redis_configs = {
-    "maxmemory-policy" = "allkeys-lru"
-  }
-
-  maintenance_policy {
-    weekly_maintenance_window {
-      day = "SUNDAY"
-      start_time {
-        hours   = 3
-        minutes = 0
-        seconds = 0
-        nanos   = 0
-      }
-    }
-  }
-
-  depends_on = [google_service_networking_connection.private_services]
 }
 
 resource "google_vertex_ai_reasoning_engine" "memory" {

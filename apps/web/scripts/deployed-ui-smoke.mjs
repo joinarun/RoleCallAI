@@ -1,14 +1,18 @@
+import { access } from "node:fs/promises";
+
 import { chromium, request } from "@playwright/test";
 
 const baseURL = process.env.ROLECALL_SMOKE_BASE_URL?.replace(/\/$/, "");
-if (!baseURL) throw new Error("Set ROLECALL_SMOKE_BASE_URL.");
+const storageStatePath = process.env.ROLECALL_SMOKE_ADMIN_STORAGE_STATE;
+if (!baseURL || !storageStatePath) {
+  throw new Error("Set ROLECALL_SMOKE_BASE_URL and ROLECALL_SMOKE_ADMIN_STORAGE_STATE.");
+}
+await access(storageStatePath);
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
 async function jsonResponse(response, operation) {
-  if (!response.ok()) {
-    throw new Error(`${operation} failed with HTTP ${response.status()}`);
-  }
+  if (!response.ok()) throw new Error(`${operation} failed with HTTP ${response.status()}`);
   if (response.status() === 204) return null;
   return response.json();
 }
@@ -23,27 +27,30 @@ async function waitUntil(label, operation, timeoutMs = 180_000, intervalMs = 2_0
   throw new Error(`${label} did not complete within ${Math.round(timeoutMs / 1000)} seconds`);
 }
 
-const publicApi = await request.newContext({ baseURL });
-const adminApi = await request.newContext({ baseURL });
+const adminApi = await request.newContext({ baseURL, storageState: storageStatePath });
+const session = await jsonResponse(await adminApi.get("/v1/auth/session"), "read admin session");
+const mutationHeaders = { Origin: baseURL, "X-CSRF-Token": session.csrfToken };
 let browser;
 let roomId;
 let roomDeleted = false;
 
 async function currentOccurrence() {
   if (!roomId) return null;
-  const response = await adminApi.get(`/v1/rooms/${roomId}/current-occurrence`);
-  return jsonResponse(response, "read current occurrence");
+  const dashboard = await jsonResponse(
+    await adminApi.get("/v1/admin/rooms"),
+    "read admin dashboard",
+  );
+  return dashboard.rooms.find((item) => item.room.id === roomId)?.currentOccurrence ?? null;
 }
 
 async function waitForIdle() {
-  return waitUntil("post-meeting processing", async () => {
-    return (await currentOccurrence()) === null;
-  });
+  return waitUntil("post-meeting processing", async () => (await currentOccurrence()) === null);
 }
 
 try {
   const created = await jsonResponse(
-    await publicApi.post("/v1/rooms", {
+    await adminApi.post("/v1/admin/rooms", {
+      headers: mutationHeaders,
       data: {
         name: `Deployed UI smoke ${Date.now()}`,
         expectedParticipants: 2,
@@ -58,17 +65,9 @@ try {
   );
   roomId = created.room.id;
 
-  const adminToken = new URLSearchParams(new URL(created.adminUrl).hash.slice(1)).get("cap");
-  if (!adminToken) throw new Error("Admin capability was not returned");
-  await jsonResponse(
-    await adminApi.post("/v1/capability-sessions", {
-      data: { roomId, token: adminToken },
-    }),
-    "exchange admin capability",
-  );
-
   const updated = await jsonResponse(
-    await adminApi.patch(`/v1/rooms/${roomId}`, {
+    await adminApi.patch(`/v1/admin/rooms/${roomId}`, {
+      headers: mutationHeaders,
       data: { agentName: "Nova Prime", durationMinutes: 10 },
     }),
     "update room settings",
@@ -81,19 +80,22 @@ try {
     headless: true,
     args: ["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream"],
   });
-  const context = await browser.newContext({ baseURL, permissions: ["microphone"] });
+  const context = await browser.newContext({
+    baseURL,
+    permissions: ["microphone"],
+    storageState: storageStatePath,
+  });
   const page = await context.newPage();
 
   await page.goto("/");
-  await page.evaluate((room) => {
-    sessionStorage.setItem(`rolecall-links:${room.room.id}`, JSON.stringify(room));
-  }, created);
-  await page.reload();
   await page.getByRole("heading", { name: /rooms, people and outcomes/i }).waitFor();
-  await page.getByRole("heading", { name: created.room.name, exact: true }).waitFor();
-  await page.getByText("Nova Prime · Scrum Master", { exact: true }).waitFor();
-  if ((await page.locator(".dashboard-seat").count()) !== 2) {
-    throw new Error("Home workspace did not render both participant links");
+  const card = page.locator(".dashboard-room-card").filter({
+    has: page.getByRole("heading", { name: created.room.name, exact: true }),
+  });
+  await card.getByText("Nova Prime · Scrum Master", { exact: true }).waitFor();
+  await card.getByRole("button", { name: /manage room/i }).click();
+  if ((await card.locator(".dashboard-seat").count()) !== 2) {
+    throw new Error("Admin dashboard did not render both participant links");
   }
 
   await page.goto(created.seatUrls[0].url);
@@ -107,7 +109,10 @@ try {
 
   const occurrence = await currentOccurrence();
   await jsonResponse(
-    await adminApi.post(`/v1/occurrences/${occurrence.id}:end`),
+    await adminApi.post(`/v1/admin/occurrences/${occurrence.id}:end`, {
+      headers: mutationHeaders,
+      data: { reason: "ui_smoke_complete" },
+    }),
     "end UI smoke meeting",
   );
   await page.getByRole("heading", { name: "Meeting summary" }).waitFor({ timeout: 180_000 });
@@ -119,13 +124,19 @@ try {
 
   await page.getByRole("link", { name: /return to home workspace/i }).click();
   await page.getByRole("heading", { name: /rooms, people and outcomes/i }).waitFor();
-  await waitUntil("home workspace history", async () => {
-    return (await page.locator(".workspace-history-row").count()) === 1;
-  }, 30_000, 1_000);
+  await waitUntil(
+    "home workspace history",
+    async () => (await page.locator(".workspace-history-row").count()) === 1,
+    30_000,
+    1_000,
+  );
   await page.getByText("UI Smoke Person", { exact: true }).first().waitFor();
 
   await waitForIdle();
-  await jsonResponse(await adminApi.delete(`/v1/rooms/${roomId}`), "delete UI smoke room");
+  await jsonResponse(
+    await adminApi.delete(`/v1/admin/rooms/${roomId}`, { headers: mutationHeaders }),
+    "delete UI smoke room",
+  );
   roomDeleted = true;
   console.log(JSON.stringify({
     status: "passed",
@@ -138,11 +149,14 @@ try {
 } finally {
   if (!roomDeleted && roomId) {
     const active = await currentOccurrence().catch(() => null);
-    if (active && ["LOBBY", "STARTING", "RUNNING", "ENDING"].includes(active.status)) {
-      await adminApi.post(`/v1/occurrences/${active.id}:end`).catch(() => undefined);
+    if (active?.status && ["LOBBY", "STARTING", "RUNNING", "ENDING"].includes(active.status)) {
+      await adminApi.post(`/v1/admin/occurrences/${active.id}:end`, {
+        headers: mutationHeaders,
+        data: { reason: "ui_smoke_cleanup" },
+      }).catch(() => undefined);
     }
     await waitForIdle().catch(() => undefined);
-    await adminApi.delete(`/v1/rooms/${roomId}`).catch(() => undefined);
+    await adminApi.delete(`/v1/admin/rooms/${roomId}`, { headers: mutationHeaders }).catch(() => undefined);
   }
-  await Promise.allSettled([browser?.close(), publicApi.dispose(), adminApi.dispose()]);
+  await Promise.allSettled([browser?.close(), adminApi.dispose()]);
 }

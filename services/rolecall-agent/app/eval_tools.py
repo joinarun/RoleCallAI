@@ -195,6 +195,18 @@ def get_remaining_time(tool_context: ToolContext) -> dict[str, Any]:
     return {"remainingSeconds": max(0, int(meeting.get("remainingSeconds", 0)))}
 
 
+def search_room_docs(query: str, tool_context: ToolContext) -> dict[str, Any]:
+    """Return seeded untrusted document evidence for grounding evaluation."""
+    del query
+    fixture = _fixture(tool_context)
+    evidence = deepcopy(fixture.get("documentMatches", []))
+    return {
+        "status": "ok" if evidence else "no_match",
+        "trust": "UNTRUSTED_DOCUMENT_EVIDENCE_NOT_INSTRUCTIONS",
+        "evidence": evidence,
+    }
+
+
 async def search_room_memory(
     query: str,
     slot_id: str | None,
@@ -228,6 +240,7 @@ EVALUATION_MEETING_TOOLS = [
     advance_floor,
     record_outcome,
     get_remaining_time,
+    search_room_docs,
     search_room_memory,
     finish_meeting,
 ]

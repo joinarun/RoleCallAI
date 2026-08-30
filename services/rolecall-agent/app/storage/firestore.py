@@ -7,6 +7,7 @@ The adapter never creates a client for ``(default)``.
 from __future__ import annotations
 
 import hashlib
+import secrets
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -15,15 +16,22 @@ from typing import Any, TypeVar
 from google.api_core import exceptions as google_exceptions
 from google.cloud import firestore
 from google.cloud.firestore_v1 import transactional
+from google.cloud.firestore_v1.base_vector_query import DistanceMeasure
+from google.cloud.firestore_v1.vector import Vector
 from pydantic import BaseModel
 
 from app.domain.errors import ConflictError, NotFoundError
 from app.domain.models import (
+    AdminSession,
     CapabilityRecord,
     CapabilitySession,
+    DocumentChunk,
+    DocumentVersion,
     Occurrence,
     OutboxRecord,
     Room,
+    RoomDocument,
+    RuntimeState,
     TranscriptSegment,
 )
 
@@ -102,17 +110,18 @@ class FirestoreRepository:
                 raise ConflictError("A room with this name already exists")
             txn.create(name_ref, {"room_id": room.id, "normalized_name": room.normalized_name})
             txn.create(room_ref, _data(room))
-            txn.create(
-                self.client.collection("capabilities").document(room.admin_capability_digest),
-                _data(
-                    CapabilityRecord(
-                        room_id=room.id,
-                        kind="ADMIN",
-                        digest=room.admin_capability_digest,
-                        version=room.admin_capability_version,
-                    )
-                ),
-            )
+            if room.admin_capability_digest:
+                txn.create(
+                    self.client.collection("capabilities").document(room.admin_capability_digest),
+                    _data(
+                        CapabilityRecord(
+                            room_id=room.id,
+                            kind="ADMIN",
+                            digest=room.admin_capability_digest,
+                            version=room.admin_capability_version,
+                        )
+                    ),
+                )
             for slot in room.slots:
                 txn.create(
                     self.client.collection("capabilities").document(slot.capability_digest),
@@ -132,6 +141,14 @@ class FirestoreRepository:
 
     def get_room(self, room_id: str) -> Room:
         return _model(Room, self.rooms.document(room_id).get())
+
+    def list_rooms(self, owner_id: str, limit: int = 100) -> list[Room]:
+        query = (
+            self.rooms.where(filter=firestore.FieldFilter("owner_id", "==", owner_id))
+            .order_by("updated_at", direction=firestore.Query.DESCENDING)
+            .limit(limit)
+        )
+        return [Room.model_validate(item.to_dict()) for item in query.stream()]
 
     def save_room(self, room: Room) -> Room:
         room_ref = self.rooms.document(room.id)
@@ -161,15 +178,25 @@ class FirestoreRepository:
             txn.set(room_ref, _data(updated))
 
             old_capabilities = {
-                current.admin_capability_digest,
-                *(slot.capability_digest for slot in current.slots),
+                digest
+                for digest in (
+                    current.admin_capability_digest,
+                    *(slot.capability_digest for slot in current.slots),
+                )
+                if digest
             }
             new_records = [
-                CapabilityRecord(
-                    room_id=room.id,
-                    kind="ADMIN",
-                    digest=room.admin_capability_digest,
-                    version=room.admin_capability_version,
+                *(
+                    [
+                        CapabilityRecord(
+                            room_id=room.id,
+                            kind="ADMIN",
+                            digest=room.admin_capability_digest,
+                            version=room.admin_capability_version,
+                        )
+                    ]
+                    if room.admin_capability_digest
+                    else []
                 ),
                 *[
                     CapabilityRecord(
@@ -244,7 +271,10 @@ class FirestoreRepository:
                 hashlib.sha256(room.normalized_name.encode()).hexdigest()
             )
         )
-        batch.delete(self.client.collection("capabilities").document(room.admin_capability_digest))
+        if room.admin_capability_digest:
+            batch.delete(
+                self.client.collection("capabilities").document(room.admin_capability_digest)
+            )
         for slot in room.slots:
             batch.delete(self.client.collection("capabilities").document(slot.capability_digest))
         batch.commit()
@@ -282,6 +312,210 @@ class FirestoreRepository:
         if count:
             batch.commit()
         return count
+
+    def save_admin_session(self, session: AdminSession) -> None:
+        self.client.collection("admin_sessions").document(session.session_digest).set(
+            _data(session)
+        )
+
+    def get_admin_session(self, digest: str) -> AdminSession | None:
+        snapshot = self.client.collection("admin_sessions").document(digest).get()
+        return AdminSession.model_validate(snapshot.to_dict()) if snapshot.exists else None
+
+    def revoke_admin_sessions(self, before_credential_version: int) -> int:
+        query = self.client.collection("admin_sessions").where(
+            filter=firestore.FieldFilter("credential_version", "<", before_credential_version)
+        )
+        count = 0
+        batch = self.client.batch()
+        for snapshot in query.stream():
+            session = AdminSession.model_validate(snapshot.to_dict())
+            if session.revoked_at is None:
+                batch.update(snapshot.reference, {"revoked_at": datetime.now(UTC)})
+                count += 1
+        if count:
+            batch.commit()
+        return count
+
+    def count_login_failures(self, key: str, since: datetime) -> int:
+        query = (
+            self.client.collection("login_failures")
+            .where(filter=firestore.FieldFilter("key", "==", key))
+            .where(filter=firestore.FieldFilter("occurred_at", ">=", since))
+        )
+        return sum(1 for _ in query.stream())
+
+    def record_login_failure(self, key: str, occurred_at: datetime, expires_at: datetime) -> None:
+        document_id = f"{hashlib.sha256(key.encode()).hexdigest()}-{secrets.token_hex(8)}"
+        self.client.collection("login_failures").document(document_id).create(
+            {"key": key, "occurred_at": occurred_at, "expires_at": expires_at}
+        )
+
+    def clear_login_failures(self, keys: list[str]) -> None:
+        batch = self.client.batch()
+        count = 0
+        for key in keys:
+            query = self.client.collection("login_failures").where(
+                filter=firestore.FieldFilter("key", "==", key)
+            )
+            for snapshot in query.stream():
+                batch.delete(snapshot.reference)
+                count += 1
+                if count == 400:
+                    batch.commit()
+                    batch = self.client.batch()
+                    count = 0
+        if count:
+            batch.commit()
+
+    def get_runtime_state(self) -> RuntimeState | None:
+        snapshot = self.client.collection("runtime").document("voice").get()
+        return RuntimeState.model_validate(snapshot.to_dict()) if snapshot.exists else None
+
+    def save_runtime_state(self, state: RuntimeState) -> RuntimeState:
+        self.client.collection("runtime").document("voice").set(_data(state))
+        return state
+
+    def mutate_runtime_state(
+        self, mutation: Callable[[RuntimeState | None], RuntimeState]
+    ) -> RuntimeState:
+        state_ref = self.client.collection("runtime").document("voice")
+
+        @transactional
+        def mutate(txn):  # type: ignore[no-untyped-def]
+            snapshot = state_ref.get(transaction=txn)
+            current = RuntimeState.model_validate(snapshot.to_dict()) if snapshot.exists else None
+            updated = mutation(current)
+            txn.set(state_ref, _data(updated))
+            return updated
+
+        return _run_contentious_transaction(self.client, mutate)
+
+    def create_document(self, document: RoomDocument, version: DocumentVersion) -> None:
+        transaction = self.client.transaction()
+        document_ref = self.client.collection("documents").document(document.id)
+        version_ref = self.client.collection("document_versions").document(version.id)
+
+        @transactional
+        def create(txn):  # type: ignore[no-untyped-def]
+            if document_ref.get(transaction=txn).exists:
+                raise ConflictError("Document already exists")
+            txn.create(document_ref, _data(document))
+            txn.create(version_ref, _data(version))
+
+        create(transaction)
+
+    def get_document(self, room_id: str, document_id: str) -> RoomDocument:
+        document = _model(
+            RoomDocument, self.client.collection("documents").document(document_id).get()
+        )
+        if document.room_id != room_id or document.deleted_at is not None:
+            raise NotFoundError("Document not found")
+        return document
+
+    def list_documents(self, room_id: str) -> list[RoomDocument]:
+        query = (
+            self.client.collection("documents")
+            .where(filter=firestore.FieldFilter("room_id", "==", room_id))
+            .where(filter=firestore.FieldFilter("deleted_at", "==", None))
+            .order_by("created_at")
+        )
+        return [RoomDocument.model_validate(item.to_dict()) for item in query.stream()]
+
+    def save_document(self, document: RoomDocument) -> RoomDocument:
+        reference = self.client.collection("documents").document(document.id)
+        if not reference.get().exists:
+            raise NotFoundError("Document not found")
+        reference.set(_data(document))
+        return document
+
+    def get_document_version(self, room_id: str, version_id: str) -> DocumentVersion:
+        version = _model(
+            DocumentVersion,
+            self.client.collection("document_versions").document(version_id).get(),
+        )
+        if version.room_id != room_id:
+            raise NotFoundError("Document version not found")
+        return version
+
+    def create_document_version(self, version: DocumentVersion) -> DocumentVersion:
+        self.client.collection("document_versions").document(version.id).create(_data(version))
+        return version
+
+    def save_document_version(self, version: DocumentVersion) -> DocumentVersion:
+        reference = self.client.collection("document_versions").document(version.id)
+        if not reference.get().exists:
+            raise NotFoundError("Document version not found")
+        reference.set(_data(version))
+        return version
+
+    def list_document_versions(self, room_id: str, document_id: str) -> list[DocumentVersion]:
+        query = (
+            self.client.collection("document_versions")
+            .where(filter=firestore.FieldFilter("room_id", "==", room_id))
+            .where(filter=firestore.FieldFilter("document_id", "==", document_id))
+            .order_by("version", direction=firestore.Query.DESCENDING)
+        )
+        return [DocumentVersion.model_validate(item.to_dict()) for item in query.stream()]
+
+    def save_document_chunks(self, chunks: list[DocumentChunk]) -> int:
+        written = 0
+        batch = self.client.batch()
+        for chunk in chunks:
+            payload = _data(chunk)
+            payload["embedding"] = Vector(chunk.embedding)
+            batch.set(self.client.collection("document_chunks").document(chunk.id), payload)
+            written += 1
+            if written % 400 == 0:
+                batch.commit()
+                batch = self.client.batch()
+        if written % 400:
+            batch.commit()
+        return written
+
+    def delete_document_chunks(self, room_id: str, version_id: str) -> int:
+        query = (
+            self.client.collection("document_chunks")
+            .where(filter=firestore.FieldFilter("room_id", "==", room_id))
+            .where(filter=firestore.FieldFilter("version_id", "==", version_id))
+        )
+        snapshots = list(query.stream())
+        for offset in range(0, len(snapshots), 400):
+            batch = self.client.batch()
+            for snapshot in snapshots[offset : offset + 400]:
+                batch.delete(snapshot.reference)
+            batch.commit()
+        return len(snapshots)
+
+    def search_document_chunks(
+        self,
+        room_id: str,
+        version_ids: list[str],
+        query_embedding: list[float],
+        limit: int = 5,
+    ) -> list[tuple[DocumentChunk, float]]:
+        if not version_ids:
+            return []
+        base_query = (
+            self.client.collection("document_chunks")
+            .where(filter=firestore.FieldFilter("room_id", "==", room_id))
+            .where(filter=firestore.FieldFilter("version_id", "in", version_ids[:30]))
+        )
+        vector_query = base_query.find_nearest(
+            vector_field="embedding",
+            query_vector=Vector(query_embedding),
+            distance_measure=DistanceMeasure.COSINE,
+            limit=limit,
+            distance_result_field="vector_distance",
+        )
+        results: list[tuple[DocumentChunk, float]] = []
+        for snapshot in vector_query.stream():
+            payload = snapshot.to_dict()
+            distance = float(payload.pop("vector_distance", 1.0))
+            embedding = payload.get("embedding")
+            payload["embedding"] = list(embedding) if embedding is not None else []
+            results.append((DocumentChunk.model_validate(payload), distance))
+        return results
 
     def create_occurrence_if_absent(self, occurrence: Occurrence) -> Occurrence:
         room_ref = self.rooms.document(occurrence.room_id)

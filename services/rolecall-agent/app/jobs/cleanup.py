@@ -36,6 +36,11 @@ def cleanup_expired(container: Container, now: datetime | None = None) -> dict[s
         "memories": 0,
         "agentSessions": 0,
         "stuckProcessing": 0,
+        "adminSessions": 0,
+        "loginFailures": 0,
+        "documentVersions": 0,
+        "documentChunks": 0,
+        "documentObjects": 0,
     }
     repository = container.repository
     _reconcile_stuck_processing(container, timestamp, counts)
@@ -57,6 +62,39 @@ def cleanup_expired(container: Container, now: datetime | None = None) -> dict[s
                     del repository.occurrences[occurrence_id]
                     repository.active_by_room.pop(occurrence.room_id, None)
                     counts["occurrences"] += 1
+            for key, session in list(repository.admin_sessions.items()):
+                if session.expires_at <= timestamp:
+                    del repository.admin_sessions[key]
+                    counts["adminSessions"] += 1
+            for key, failures in list(repository.login_failures.items()):
+                remaining = [item for item in failures if item[1] > timestamp]
+                counts["loginFailures"] += len(failures) - len(remaining)
+                if remaining:
+                    repository.login_failures[key] = remaining
+                else:
+                    repository.login_failures.pop(key, None)
+            expired_versions = [
+                version.model_copy(deep=True)
+                for version in repository.document_versions.values()
+                if version.expires_at <= timestamp
+            ]
+            for version in expired_versions:
+                counts["documentChunks"] += repository.delete_document_chunks(
+                    version.room_id, version.id
+                )
+                container.documents.object_store.delete(version.object_name)
+                counts["documentObjects"] += 1
+                repository.document_versions.pop(version.id, None)
+                counts["documentVersions"] += 1
+                document = repository.documents.get(version.document_id)
+                if document:
+                    if document.active_version_id == version.id:
+                        document.active_version_id = None
+                    if document.pending_version_id == version.id:
+                        document.pending_version_id = None
+                    if not document.active_version_id and not document.pending_version_id:
+                        document.deleted_at = timestamp
+                    repository.documents[document.id] = document
     elif isinstance(repository, FirestoreRepository):
         _cleanup_firestore(container, repository, timestamp, counts)
 
@@ -212,6 +250,7 @@ def delete_room_artifacts(container: Container, payload: dict[str, Any]) -> dict
     deleted = {
         "firestore": 0,
         "memories": 0,
+        "documentObjects": 0,
     }
 
     repository = container.repository
@@ -231,6 +270,18 @@ def delete_room_artifacts(container: Container, payload: dict[str, Any]) -> dict
             ]:
                 del repository.sessions[key]
                 deleted["firestore"] += 1
+            for document_id, document in list(repository.documents.items()):
+                if document.room_id != room_id:
+                    continue
+                for version_id, version in list(repository.document_versions.items()):
+                    if version.document_id != document_id:
+                        continue
+                    repository.delete_document_chunks(room_id, version_id)
+                    container.documents.object_store.delete(version.object_name)
+                    repository.document_versions.pop(version_id, None)
+                    deleted["documentObjects"] += 1
+                repository.documents.pop(document_id, None)
+                deleted["firestore"] += 1
     elif isinstance(repository, FirestoreRepository):
         occurrences = repository.client.collection("occurrences").where(
             filter=firestore.FieldFilter("room_id", "==", room_id)
@@ -249,6 +300,22 @@ def delete_room_artifacts(container: Container, payload: dict[str, Any]) -> dict
         )
         for snapshot in sessions.stream():
             snapshot.reference.delete()
+            deleted["firestore"] += 1
+        documents = repository.client.collection("documents").where(
+            filter=firestore.FieldFilter("room_id", "==", room_id)
+        )
+        for document in documents.stream():
+            versions = repository.client.collection("document_versions").where(
+                filter=firestore.FieldFilter("document_id", "==", document.id)
+            )
+            for version in versions.stream():
+                payload = version.to_dict()
+                deleted["firestore"] += repository.delete_document_chunks(room_id, version.id)
+                container.documents.object_store.delete(str(payload["object_name"]))
+                deleted["documentObjects"] += 1
+                version.reference.delete()
+                deleted["firestore"] += 1
+            document.reference.delete()
             deleted["firestore"] += 1
 
     engine_name = _agent_engine_name(container)
@@ -275,7 +342,9 @@ def _cleanup_firestore(
 ) -> None:
     client = repository.client
     for collection, field, counter in (
+        ("admin_sessions", "expires_at", "adminSessions"),
         ("capability_sessions", "expires_at", "capabilitySessions"),
+        ("login_failures", "expires_at", "loginFailures"),
         ("transcript_segments", "expires_at", "transcriptSegments"),
         ("occurrences", "expires_at", "occurrences"),
     ):
@@ -283,6 +352,36 @@ def _cleanup_firestore(
             filter=firestore.FieldFilter(field, "<=", timestamp)
         )
         _delete_snapshots(query.stream(), counts, counter)
+    expired_versions = list(
+        client.collection("document_versions")
+        .where(filter=firestore.FieldFilter("expires_at", "<=", timestamp))
+        .stream()
+    )
+    for snapshot in expired_versions:
+        version = snapshot.to_dict()
+        room_id = str(version["room_id"])
+        version_id = snapshot.id
+        counts["documentChunks"] += repository.delete_document_chunks(room_id, version_id)
+        container.documents.object_store.delete(str(version["object_name"]))
+        counts["documentObjects"] += 1
+        document_ref = client.collection("documents").document(str(version["document_id"]))
+        document_snapshot = document_ref.get()
+        if document_snapshot.exists:
+            document = document_snapshot.to_dict()
+            updates: dict[str, Any] = {"updated_at": timestamp}
+            if document.get("active_version_id") == version_id:
+                updates["active_version_id"] = None
+            if document.get("pending_version_id") == version_id:
+                updates["pending_version_id"] = None
+            remaining_active = updates.get("active_version_id", document.get("active_version_id"))
+            remaining_pending = updates.get(
+                "pending_version_id", document.get("pending_version_id")
+            )
+            if not remaining_active and not remaining_pending:
+                updates["deleted_at"] = timestamp
+            document_ref.update(updates)
+        snapshot.reference.delete()
+        counts["documentVersions"] += 1
 
 
 def _delete_snapshots(snapshots: Any, counts: dict[str, int], counter: str) -> None:

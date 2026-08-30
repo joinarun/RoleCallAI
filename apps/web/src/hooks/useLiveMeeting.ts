@@ -7,7 +7,7 @@ import {
   type RemoteTrack,
 } from "livekit-client";
 import { api, jsonBody } from "../lib/api";
-import type { Caption, JoinResponse, LiveMessage, Occurrence, Recap } from "../types";
+import type { Caption, JoinResponse, LiveMessage, Occurrence, Recap, RetrievalCitation } from "../types";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -27,6 +27,7 @@ export function useLiveMeeting(join: JoinResponse) {
   const [connection, setConnection] = useState<"connecting" | "connected" | "reconnecting" | "disconnected">("connecting");
   const [occurrence, setOccurrence] = useState(join.occurrence);
   const [captions, setCaptions] = useState<Caption[]>([]);
+  const [citations, setCitations] = useState<RetrievalCitation[]>(join.occurrence.retrievalCitations ?? []);
   const [recap, setRecap] = useState<Recap | null>(join.occurrence.recap ?? null);
   const [micEnabled, setMicEnabled] = useState(false);
   const [micAllowed, setMicAllowed] = useState(false);
@@ -87,6 +88,10 @@ export function useLiveMeeting(join: JoinResponse) {
         if (message.occurrenceId !== join.occurrence.id || message.v !== 1) return;
         if (message.type === "meeting.state") setOccurrence(message.payload as unknown as Occurrence);
         if (message.type === "caption.final") setCaptions((items) => [...items.filter((item) => item.id !== (message.payload as unknown as Caption).id), message.payload as unknown as Caption].sort((a, b) => a.sequence - b.sequence));
+        if (message.type === "citation") {
+          const citation = message.payload as unknown as RetrievalCitation;
+          setCitations((items) => [...items.filter((item) => !(item.versionId === citation.versionId && item.excerpt === citation.excerpt)), citation]);
+        }
         if (message.type === "recap.ready") setRecap(message.payload as unknown as Recap);
       } catch {
         // Ignore unversioned or malformed room data.
@@ -209,5 +214,5 @@ export function useLiveMeeting(join: JoinResponse) {
     }
   }, [join.connectionId, occurrence.id]);
 
-  return { connection, occurrence, setOccurrence, captions, recap, micEnabled, micAllowed, mediaError, audioQuality, left, toggleMic, raiseHand, leaveMeeting };
+  return { connection, occurrence, setOccurrence, captions, citations, recap, micEnabled, micAllowed, mediaError, audioQuality, left, toggleMic, raiseHand, leaveMeeting };
 }

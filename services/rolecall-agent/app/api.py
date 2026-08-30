@@ -6,6 +6,7 @@ import asyncio
 import base64
 import json
 import logging
+from datetime import timedelta
 from typing import Any
 
 from fastapi import APIRouter, Request, Response, status
@@ -15,15 +16,12 @@ from pydantic import BaseModel
 
 from app.container import Container
 from app.domain.enums import CapabilityKind, OccurrenceStatus
-from app.domain.errors import ForbiddenError, NotFoundError, UnauthorizedError
+from app.domain.errors import ForbiddenError, NotFoundError, RateLimitError, UnauthorizedError
 from app.domain.models import (
     CapabilityClaims,
     CapabilityExchangeRequest,
     CapabilityExchangeResponse,
-    DashboardRoomItem,
-    DashboardRoomsRequest,
     DashboardRoomsResponse,
-    EndMeetingPermissionRequest,
     EndMeetingRequest,
     HistoryItem,
     JoinRequest,
@@ -33,9 +31,6 @@ from app.domain.models import (
     RefreshRequest,
     RoomCreate,
     RoomCreatedResponse,
-    RoomPatch,
-    RoomUpdatedResponse,
-    RoomView,
     StartRequest,
 )
 from app.jobs.outbox import publish_outbox_record
@@ -120,63 +115,14 @@ async def _publish_postprocess_now(container: Container, occurrence_id: str) -> 
 
 @router.post("/rooms", response_model=RoomCreatedResponse, status_code=status.HTTP_201_CREATED)
 def create_room(request: Request, payload: RoomCreate) -> RoomCreatedResponse:
-    container = _container(request)
-    container.rate_limiter.enforce(
-        container.rate_limiter.privacy_key("room-create", _client_ip(request)),
-        container.settings.room_create_rate_per_hour,
-        3600,
-    )
-    return container.rooms.create(payload)
+    del request, payload
+    raise UnauthorizedError("Admin login required")
 
 
 @router.post("/dashboard/rooms", response_model=DashboardRoomsResponse)
-def dashboard_rooms(
-    request: Request, payload: DashboardRoomsRequest
-) -> DashboardRoomsResponse:
-    """Resolve only admin links held by this browser; never list rooms globally."""
-
-    container = _container(request)
-    resolved: list[DashboardRoomItem] = []
-    unavailable: list[str] = []
-    seen_room_ids: set[str] = set()
-    for credential in payload.rooms:
-        if credential.room_id in seen_room_ids:
-            continue
-        seen_room_ids.add(credential.room_id)
-        try:
-            container.capabilities.verify_token(
-                credential.room_id,
-                credential.token,
-                CapabilityKind.ADMIN,
-            )
-            room = container.repository.get_room(credential.room_id)
-        except (UnauthorizedError, NotFoundError):
-            unavailable.append(credential.room_id)
-            continue
-        resolved.append(
-            DashboardRoomItem(
-                room=RoomView.from_room(room),
-                current_occurrence=container.repository.get_active_occurrence(credential.room_id),
-                history=[
-                    _history_item(item)
-                    for item in container.repository.list_occurrences(
-                        credential.room_id, limit=90
-                    )
-                ],
-            )
-        )
-    if unavailable:
-        container.rate_limiter.enforce(
-            container.rate_limiter.privacy_key(
-                "dashboard-capability-failure", _client_ip(request)
-            ),
-            container.settings.capability_failure_rate_per_minute,
-            60,
-        )
-    return DashboardRoomsResponse(
-        rooms=resolved,
-        unavailable_room_ids=unavailable,
-    )
+def dashboard_rooms(request: Request) -> DashboardRoomsResponse:
+    del request
+    raise UnauthorizedError("Admin login required")
 
 
 @router.post("/capability-sessions", response_model=CapabilityExchangeResponse)
@@ -186,12 +132,16 @@ def exchange_capability(
     container = _container(request)
     try:
         cookie, claims = container.capabilities.exchange(payload.room_id, payload.token)
-    except UnauthorizedError:
-        container.rate_limiter.enforce(
-            container.rate_limiter.privacy_key("capability-failure", _client_ip(request)),
-            container.settings.capability_failure_rate_per_minute,
-            60,
-        )
+    except UnauthorizedError as exc:
+        try:
+            container.rate_limits.enforce(
+                "capability-failure",
+                _client_ip(request),
+                container.settings.capability_failure_rate_per_minute,
+                timedelta(minutes=1),
+            )
+        except RateLimitError as rate_error:
+            raise rate_error from exc
         raise
     response.set_cookie(
         key=container.settings.cookie_name,
@@ -231,26 +181,22 @@ def current_capability_session(request: Request) -> CapabilityExchangeResponse:
 @router.get("/rooms/{room_id}")
 def get_room(request: Request, room_id: str):  # type: ignore[no-untyped-def]
     claims = _claims(request)
-    if claims.room_id != room_id:
+    if claims.room_id != room_id or claims.kind != CapabilityKind.SEAT or not claims.slot_id:
         raise ForbiddenError("This private room is not available with the current link")
     room = _container(request).repository.get_room(room_id)
-    if claims.kind == CapabilityKind.SEAT and claims.slot_id:
-        return ParticipantRoomView.from_room_and_slot(room, claims.slot_id)
-    return RoomView.from_room(room)
+    return ParticipantRoomView.from_room_and_slot(room, claims.slot_id)
 
 
-@router.patch("/rooms/{room_id}", response_model=RoomUpdatedResponse)
-def update_room(request: Request, room_id: str, payload: RoomPatch) -> RoomUpdatedResponse:
-    claims = _claims(request)
-    _authorize_room(claims, room_id, CapabilityKind.ADMIN)
-    return _container(request).rooms.update(room_id, payload)
+@router.patch("/rooms/{room_id}")
+def update_room(request: Request, room_id: str) -> None:
+    del request, room_id
+    raise UnauthorizedError("Use the authenticated admin dashboard")
 
 
 @router.delete("/rooms/{room_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_room(request: Request, room_id: str) -> None:
-    claims = _claims(request)
-    _authorize_room(claims, room_id, CapabilityKind.ADMIN)
-    _container(request).rooms.delete(room_id)
+    del request, room_id
+    raise UnauthorizedError("Use the authenticated admin dashboard")
 
 
 @router.post(
@@ -258,31 +204,20 @@ def delete_room(request: Request, room_id: str) -> None:
     response_model=dict[str, str],
 )
 def regenerate_seat(request: Request, room_id: str, slot_id: str) -> dict[str, str]:
-    claims = _claims(request)
-    _authorize_room(claims, room_id, CapabilityKind.ADMIN)
-    return {"url": _container(request).rooms.regenerate_seat(room_id, slot_id)}
+    del request, room_id, slot_id
+    raise UnauthorizedError("Use the authenticated admin dashboard")
 
 
 @router.put(
     "/rooms/{room_id}/slots/{slot_id}:end-meeting-permission",
-    response_model=RoomView,
 )
 async def set_end_meeting_permission(
     request: Request,
     room_id: str,
     slot_id: str,
-    payload: EndMeetingPermissionRequest,
-) -> RoomView:
-    claims = _claims(request)
-    _authorize_room(claims, room_id, CapabilityKind.ADMIN)
-    container = _container(request)
-    room_view = container.rooms.set_end_meeting_permission(room_id, slot_id, payload.allowed)
-    active = container.repository.get_active_occurrence(room_id)
-    if active is not None:
-        await container.livekit.publish_message(
-            active, "meeting.state", active.model_dump(mode="json")
-        )
-    return room_view
+) -> None:
+    del request, room_id, slot_id
+    raise UnauthorizedError("Use the authenticated admin dashboard")
 
 
 @router.post("/rooms/{room_id}:join", response_model=JoinResponse)
@@ -292,7 +227,9 @@ async def join_room(request: Request, room_id: str, payload: JoinRequest) -> Joi
     if not claims.slot_id:
         raise ForbiddenError("Seat capability required")
     container = _container(request)
+    container.runtime.require_ready()
     occurrence = container.meetings.join(room_id, claims.slot_id, payload)
+    container.runtime.activity()
     await container.livekit.ensure_room(occurrence)
     if occurrence.status in {OccurrenceStatus.RUNNING, OccurrenceStatus.ENDING}:
         await container.livekit.dispatch_agent(occurrence)
@@ -320,7 +257,9 @@ async def refresh_room_token(
     if not claims.slot_id:
         raise ForbiddenError("Seat capability required")
     container = _container(request)
+    container.runtime.require_ready()
     occurrence = container.meetings.reconnect(room_id, claims.slot_id, payload.connection_id)
+    container.runtime.activity()
     if occurrence.status in {OccurrenceStatus.RUNNING, OccurrenceStatus.ENDING}:
         await container.livekit.ensure_room(occurrence)
         await container.livekit.dispatch_agent(occurrence)
@@ -351,10 +290,12 @@ async def start_occurrence(request: Request, occurrence_id: str, payload: StartR
     if claims.kind != CapabilityKind.SEAT or not claims.slot_id:
         raise ForbiddenError("A present participant capability is required")
     container = _container(request)
+    container.runtime.require_ready()
     occurrence = container.repository.get_occurrence(occurrence_id)
     if occurrence.room_id != claims.room_id:
         raise ForbiddenError("This meeting is not available with the current link")
     occurrence = container.meetings.start(occurrence_id, claims.slot_id)
+    container.runtime.activity()
     await container.livekit.dispatch_agent(occurrence)
     return occurrence
 
@@ -376,7 +317,9 @@ def hand_raise(request: Request, occurrence_id: str):  # type: ignore[no-untyped
     occurrence = _container(request).repository.get_occurrence(occurrence_id)
     if occurrence.room_id != claims.room_id:
         raise ForbiddenError("This meeting is not available with the current link")
-    return _container(request).meetings.raise_hand(occurrence_id, claims.slot_id)
+    container = _container(request)
+    container.runtime.activity()
+    return container.meetings.raise_hand(occurrence_id, claims.slot_id)
 
 
 @router.post("/occurrences/{occurrence_id}:leave")
@@ -389,6 +332,7 @@ async def leave_occurrence(request: Request, occurrence_id: str, payload: LeaveR
     if occurrence.room_id != claims.room_id:
         raise ForbiddenError("This meeting is not available with the current link")
     occurrence = container.meetings.leave(occurrence_id, claims.slot_id, payload.connection_id)
+    container.runtime.activity()
     await container.livekit.enforce_floor(occurrence)
     await container.livekit.publish_message(
         occurrence, "meeting.state", occurrence.model_dump(mode="json")
@@ -410,24 +354,21 @@ async def end_occurrence(
     if occurrence.room_id != claims.room_id:
         raise ForbiddenError("This meeting is not available with the current link")
 
-    reason = "ended_by_admin"
-    if claims.kind == CapabilityKind.SEAT:
-        if not claims.slot_id:
-            raise ForbiddenError("Seat capability required")
-        room = container.repository.get_room(occurrence.room_id)
-        seat = next((item for item in room.slots if item.id == claims.slot_id), None)
-        attendance = occurrence.attendance.get(claims.slot_id)
-        if not seat or not seat.can_end_meeting or not attendance or not attendance.connected:
-            raise ForbiddenError("This participant cannot end the meeting for everyone")
-        reason = "ended_by_delegated_participant"
-    elif claims.kind != CapabilityKind.ADMIN:
-        raise ForbiddenError("Admin or delegated participant capability required")
+    if claims.kind != CapabilityKind.SEAT or not claims.slot_id:
+        raise ForbiddenError("A delegated participant capability is required")
+    room = container.repository.get_room(occurrence.room_id)
+    seat = next((item for item in room.slots if item.id == claims.slot_id), None)
+    attendance = occurrence.attendance.get(claims.slot_id)
+    if not seat or not seat.can_end_meeting or not attendance or not attendance.connected:
+        raise ForbiddenError("This participant cannot end the meeting for everyone")
+    reason = "ended_by_delegated_participant"
 
     if payload and payload.reason.startswith("agent_"):
         # Preserve the operational meaning of agent_* failure reasons for the
         # worker only; public callers cannot manufacture a worker failure.
         raise ForbiddenError("Reserved meeting end reason")
     occurrence = container.meetings.finish(occurrence_id, reason)
+    container.runtime.activity()
     await container.livekit.enforce_floor(occurrence)
     await container.livekit.publish_message(
         occurrence, "meeting.state", occurrence.model_dump(mode="json")
@@ -451,27 +392,20 @@ def participant_recap(request: Request, occurrence_id: str):  # type: ignore[no-
 
 @router.get("/rooms/{room_id}/history", response_model=list[HistoryItem])
 def room_history(request: Request, room_id: str) -> list[HistoryItem]:
-    claims = _claims(request)
-    _authorize_room(claims, room_id, CapabilityKind.ADMIN)
-    return [
-        _history_item(item)
-        for item in _container(request).repository.list_occurrences(room_id, limit=90)
-    ]
+    del request, room_id
+    raise UnauthorizedError("Use the authenticated admin dashboard")
 
 
 @router.get("/rooms/{room_id}/current-occurrence")
 def current_occurrence(request: Request, room_id: str):  # type: ignore[no-untyped-def]
-    claims = _claims(request)
-    _authorize_room(claims, room_id, CapabilityKind.ADMIN)
-    return _container(request).repository.get_active_occurrence(room_id)
+    del request, room_id
+    raise UnauthorizedError("Use the authenticated admin dashboard")
 
 
 @router.get("/occurrences/{occurrence_id}/transcript")
 def admin_transcript(request: Request, occurrence_id: str):  # type: ignore[no-untyped-def]
-    claims = _claims(request)
-    occurrence = _container(request).repository.get_occurrence(occurrence_id)
-    _authorize_room(claims, occurrence.room_id, CapabilityKind.ADMIN)
-    return _container(request).repository.list_transcript_segments(occurrence_id)
+    del request, occurrence_id
+    raise UnauthorizedError("Use the authenticated admin dashboard")
 
 
 @router.post("/internal/livekit/webhook", include_in_schema=False)

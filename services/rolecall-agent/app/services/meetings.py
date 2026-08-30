@@ -24,6 +24,7 @@ from app.domain.models import (
     Outcome,
 )
 from app.domain.repository import Repository
+from app.retrieval.documents import DocumentService
 from app.services.rooms import new_id
 
 ALLOWED_TRANSITIONS: dict[OccurrenceStatus, set[OccurrenceStatus]] = {
@@ -42,9 +43,15 @@ ALLOWED_TRANSITIONS: dict[OccurrenceStatus, set[OccurrenceStatus]] = {
 
 
 class MeetingService:
-    def __init__(self, repository: Repository, settings: Settings) -> None:
+    def __init__(
+        self,
+        repository: Repository,
+        settings: Settings,
+        documents: DocumentService | None = None,
+    ) -> None:
         self.repository = repository
         self.settings = settings
+        self.documents = documents
 
     def get_or_create_occurrence(self, room_id: str, now: datetime | None = None) -> Occurrence:
         timestamp = now or datetime.now(UTC)
@@ -60,6 +67,9 @@ class MeetingService:
             ),
             None,
         )
+        ready_document_version_ids, omitted_document_count = (
+            self.documents.ready_version_ids(room_id) if self.documents else ([], 0)
+        )
         candidate = Occurrence(
             id=new_id("occ"),
             room_id=room_id,
@@ -68,6 +78,8 @@ class MeetingService:
             lobby_deadline_at=timestamp
             + timedelta(seconds=self.settings.lobby_early_start_seconds),
             previous_recap=previous,
+            ready_document_version_ids=ready_document_version_ids,
+            omitted_document_count=omitted_document_count,
             end_meeting_slot_ids=[slot.id for slot in room.slots if slot.can_end_meeting],
         )
         return self.repository.create_occurrence_if_absent(candidate)

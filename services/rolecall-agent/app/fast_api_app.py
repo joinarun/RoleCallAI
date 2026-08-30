@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from app.admin_api import router as admin_router
 from app.api import router
 from app.container import create_container
 from app.domain.errors import RoleCallError
@@ -42,6 +43,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 app.include_router(router)
+app.include_router(admin_router)
 
 if _is_local:
     app.add_middleware(
@@ -49,7 +51,12 @@ if _is_local:
         allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
         allow_credentials=True,
         allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
-        allow_headers=["Content-Type", "X-Request-ID", "X-Upload-Content-Length"],
+        allow_headers=[
+            "Content-Type",
+            "X-CSRF-Token",
+            "X-Request-ID",
+            "X-Upload-Content-Length",
+        ],
     )
 
 
@@ -63,9 +70,10 @@ async def security_headers(request: Request, call_next):  # type: ignore[no-unty
     response.headers["Permissions-Policy"] = "camera=(), microphone=(self), geolocation=()"
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; connect-src 'self' https: wss: ws://localhost:*; "
-        "script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+        "script-src 'self' https://www.google.com https://www.gstatic.com; "
+        "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
         "font-src 'self'; media-src 'self' blob:; object-src 'none'; base-uri 'self'; "
-        "frame-ancestors 'none'; form-action 'self'"
+        "frame-src https://www.google.com; frame-ancestors 'none'; form-action 'self'"
     )
     if not _is_local:
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"

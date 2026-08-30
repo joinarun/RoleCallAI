@@ -23,9 +23,16 @@ try {
   const desktopPage = await desktop.newPage();
   await desktopPage.goto("/");
   await desktopPage.getByRole("heading", { name: /let ai lead/i }).waitFor();
-  await desktopPage.screenshot({ path: resolve(outputDir, "create-desktop.png"), fullPage: true });
+  await desktopPage.screenshot({ path: resolve(outputDir, "login-desktop.png"), fullPage: true });
+  await desktopPage.getByLabel("Username").fill("judge-local");
+  await desktopPage.getByLabel("Password").fill("local-rolecall-admin-password");
+  await desktopPage.getByRole("button", { name: /sign in securely/i }).click();
+  await desktopPage.getByRole("heading", { name: /rooms, people and outcomes/i }).waitFor();
+  const csrfToken = await desktopPage.evaluate(() => sessionStorage.getItem("rolecall.admin.csrf"));
+  if (!csrfToken) throw new Error("Local admin session did not provide a CSRF token");
 
-  const roomResponse = await desktopPage.request.post(`${apiBase}/v1/rooms`, {
+  const roomResponse = await desktopPage.request.post(`${apiBase}/v1/admin/rooms`, {
+    headers: { Origin: webBase, "X-CSRF-Token": csrfToken },
     data: {
       name: `Roadmap Lab · ${String(Date.now()).slice(-4)}`,
       expectedParticipants: 4,
@@ -42,11 +49,7 @@ try {
   }
   const created = await roomResponse.json();
 
-  await desktopPage.evaluate((room) => {
-    sessionStorage.setItem(`rolecall-links:${room.room.id}`, JSON.stringify(room));
-  }, created);
-  await desktopPage.goto("/");
-  await desktopPage.getByRole("heading", { name: /rooms, people and outcomes/i }).waitFor();
+  await desktopPage.getByRole("button", { name: /refresh/i }).click();
   await desktopPage.getByRole("heading", { name: created.room.name }).waitFor();
   await desktopPage.screenshot({
     path: resolve(outputDir, "home-workspace-desktop.png"),
@@ -57,21 +60,21 @@ try {
     viewport: { width: 390, height: 844 },
     isMobile: true,
     hasTouch: true,
+    storageState: await desktop.storageState(),
   });
   const mobileDashboardPage = await mobileDashboard.newPage();
   await mobileDashboardPage.goto("/");
-  await mobileDashboardPage.evaluate((room) => {
-    sessionStorage.setItem(`rolecall-links:${room.room.id}`, JSON.stringify(room));
-  }, created);
-  await mobileDashboardPage.reload();
   await mobileDashboardPage.getByRole("heading", { name: /rooms, people and outcomes/i }).waitFor();
   await mobileDashboardPage.screenshot({
     path: resolve(outputDir, "home-workspace-mobile.png"),
     fullPage: true,
   });
   await mobileDashboard.close();
-  await desktopPage.goto(created.adminUrl);
-  await desktopPage.getByText("Room is idle").waitFor();
+  const roomCard = desktopPage.locator(".dashboard-room-card").filter({
+    has: desktopPage.getByRole("heading", { name: created.room.name, exact: true }),
+  });
+  await roomCard.getByRole("button", { name: /manage room/i }).click();
+  await roomCard.getByText("Participants and links").waitFor();
   await desktopPage.screenshot({
     path: resolve(outputDir, "admin-overview-desktop.png"),
     fullPage: true,

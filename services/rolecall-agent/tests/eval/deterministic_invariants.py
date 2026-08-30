@@ -12,6 +12,7 @@ _ALLOWED_ARGS = {
     "advance_floor": set(),
     "record_outcome": {"kind", "text", "owner_slot_id"},
     "get_remaining_time": set(),
+    "search_room_docs": {"query"},
     "search_room_memory": {"query", "slot_id"},
     "finish_meeting": {"reason"},
 }

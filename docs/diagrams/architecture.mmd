@@ -1,0 +1,62 @@
+flowchart TB
+    subgraph Users[Browsers]
+      A[Admin]
+      P[Participants<br/>2-10 per room]
+    end
+    subgraph GCP[Google Cloud - europe-west4]
+      subgraph Always[Addressable and scale-to-zero]
+        WEB[Cloud Run web + FastAPI<br/>1 service, 0-10 instances]
+        JOBS[Cloud Run async API<br/>1 service, 0-10 instances]
+        WAKE[Cloud Run Jobs<br/>wake + suspend]
+      end
+      CAPTCHA[reCAPTCHA<br/>checkbox + risk assessment]
+      SM[Secret Manager<br/>4 regional secrets]
+      KMS[Cloud KMS<br/>1 symmetric key]
+      DB[(Firestore Native<br/>rolecall-dev + vector indexes)]
+      GCS[(Cloud Storage<br/>private document originals)]
+      PS[Pub/Sub<br/>8 topics + 4 subscriptions]
+      SCH[Cloud Scheduler<br/>3 jobs]
+      AI[Vertex AI<br/>Gemini Live, summary, embeddings<br/>and Memory Bank]
+      subgraph Voice[Voice plane - SLEEPING or READY]
+        LB[Signaling + TURN load balancers<br/>absent while sleeping]
+        subgraph GKE[GKE Standard - europe-west4-a]
+          MEDIA[Media pool<br/>0 / 1 / 3 nodes]
+          WORKERS[Worker pool<br/>0 / 2 / 6 nodes]
+          LK[LiveKit<br/>0 or 1-3 pods]
+          ADK[Google ADK workers<br/>0 or 2-6 pods]
+          REDIS[(Ephemeral Redis<br/>0 or 1 pod)]
+          EDGE[Ingress + cert-manager<br/>0 or 5 pods]
+        end
+      end
+      OBS[Logging, Monitoring and Trace]
+      AR[Artifact Registry + Cloud Build]
+    end
+    A -->|login and admin APIs| WEB
+    P -->|seat capability and lobby| WEB
+    WEB --> CAPTCHA
+    WEB --> SM
+    WEB --> KMS
+    WEB --> DB
+    WEB --> GCS
+    WEB --> PS
+    PS --> JOBS
+    JOBS --> GCS
+    JOBS --> DB
+    JOBS --> AI
+    SCH --> JOBS
+    JOBS --> WAKE
+    WEB -->|admin-only wake| WAKE
+    WAKE --> GKE
+    WAKE --> LB
+    P <-->|WebRTC when READY| LB
+    LB <--> LK
+    LK <--> ADK
+    ADK <--> REDIS
+    ADK <--> AI
+    ADK --> DB
+    WEB -. redacted telemetry .-> OBS
+    JOBS -. redacted telemetry .-> OBS
+    ADK -. redacted telemetry .-> OBS
+    AR -. images .-> WEB
+    AR -. images .-> JOBS
+    AR -. images .-> ADK

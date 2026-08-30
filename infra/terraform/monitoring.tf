@@ -73,6 +73,30 @@ resource "google_logging_metric" "audio_gaps" {
   }
 }
 
+resource "google_logging_metric" "document_index_failures" {
+  name        = "rolecall_document_index_failures"
+  description = "Document indexing failures without room IDs, titles, or extracted content"
+  filter      = "resource.type=\"cloud_run_revision\" jsonPayload.message:\"event=document_index_failed\""
+
+  metric_descriptor {
+    metric_kind = "DELTA"
+    value_type  = "INT64"
+    unit        = "1"
+  }
+}
+
+resource "google_logging_metric" "runtime_transition_failures" {
+  name        = "rolecall_runtime_transition_failures"
+  description = "Voice-plane wake or suspend failures without operation identifiers"
+  filter      = "resource.type=\"cloud_run_job\" jsonPayload.message:\"event=runtime_transition_failed\""
+
+  metric_descriptor {
+    metric_kind = "DELTA"
+    value_type  = "INT64"
+    unit        = "1"
+  }
+}
+
 resource "google_monitoring_alert_policy" "pubsub_stuck" {
   display_name = "RoleCallAI stuck processing queue"
   combiner     = "OR"
@@ -196,6 +220,58 @@ resource "google_monitoring_alert_policy" "audio_gaps" {
     auto_close = "1800s"
   }
 
+  notification_channels = local.notification_channels
+}
+
+resource "google_monitoring_alert_policy" "document_index_failures" {
+  display_name = "RoleCallAI document indexing failures"
+  combiner     = "OR"
+  enabled      = true
+
+  conditions {
+    display_name = "Any document indexing failure"
+    condition_threshold {
+      filter          = "resource.type = \"cloud_run_revision\" AND metric.type = \"logging.googleapis.com/user/${google_logging_metric.document_index_failures.name}\""
+      comparison      = "COMPARISON_GT"
+      threshold_value = 0
+      duration        = "0s"
+
+      aggregations {
+        alignment_period   = "60s"
+        per_series_aligner = "ALIGN_SUM"
+      }
+
+      trigger { count = 1 }
+    }
+  }
+
+  alert_strategy { auto_close = "1800s" }
+  notification_channels = local.notification_channels
+}
+
+resource "google_monitoring_alert_policy" "runtime_transition_failures" {
+  display_name = "RoleCallAI voice runtime transition failures"
+  combiner     = "OR"
+  enabled      = true
+
+  conditions {
+    display_name = "Any wake or suspend failure"
+    condition_threshold {
+      filter          = "resource.type = \"cloud_run_job\" AND metric.type = \"logging.googleapis.com/user/${google_logging_metric.runtime_transition_failures.name}\""
+      comparison      = "COMPARISON_GT"
+      threshold_value = 0
+      duration        = "0s"
+
+      aggregations {
+        alignment_period   = "60s"
+        per_series_aligner = "ALIGN_SUM"
+      }
+
+      trigger { count = 1 }
+    }
+  }
+
+  alert_strategy { auto_close = "1800s" }
   notification_channels = local.notification_channels
 }
 

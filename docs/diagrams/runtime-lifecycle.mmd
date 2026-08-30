@@ -1,0 +1,9 @@
+stateDiagram-v2
+    [*] --> SLEEPING
+    SLEEPING --> WAKING: authenticated admin wake
+    WAKING --> READY: end-to-end health passes
+    WAKING --> ERROR: recovery exhausted
+    ERROR --> WAKING: admin retry
+    READY --> SUSPENDING: 30m idle + no active meeting
+    SUSPENDING --> SLEEPING: LB removed + nodes zero
+    SUSPENDING --> READY: protected activity aborts suspension

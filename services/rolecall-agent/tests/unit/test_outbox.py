@@ -57,11 +57,7 @@ def test_known_outbox_record_can_publish_without_waiting_for_scheduler(
     record = container.repository.list_pending_outbox()[0]
     publisher = Publisher()
 
-    assert publish_outbox_record(
-        container.settings, container.repository, record.id, publisher
-    )
-    assert not publish_outbox_record(
-        container.settings, container.repository, record.id, publisher
-    )
+    assert publish_outbox_record(container.settings, container.repository, record.id, publisher)
+    assert not publish_outbox_record(container.settings, container.repository, record.id, publisher)
     assert len(publisher.messages) == 1
     assert container.repository.get_outbox(record.id).published_at is not None

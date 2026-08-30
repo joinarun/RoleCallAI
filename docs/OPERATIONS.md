@@ -1,119 +1,127 @@
-# Development suspend and resume runbook
+# Development sleep, wake and operations
 
-The local operator script provides a reversible, data-preserving way to stop the
-expensive meeting runtime when it is not in use.
+RoleCallAI automatically suspends its expensive voice plane after 30 minutes
+without genuine UI or meeting activity. The Cloud Run web/bootstrap service
+remains addressable at the existing `run.app` URL and scales to zero between
+requests. Room management and document indexing still work while voice sleeps.
 
-This is the right workflow for a short pause. For a permanent teardown that also
-deletes Redis, GKE, load balancers, stored meeting data, images, and secrets, use
-the separately guarded [full teardown/recreate runbook](FULL_TEARDOWN.md).
+## Normal admin workflow
 
-## Prerequisites
+1. Open the home page and sign in with the shared judge credential.
+2. Complete the reCAPTCHA checkbox. Five failures per IP or twenty per network
+   prefix in ten minutes are throttled in Firestore.
+3. If the runtime card says `SLEEPING`, click **Wake voice services**.
+4. Wait for `READY` before sharing or using participant links. Provisioning
+   normally takes 10–20 minutes.
+5. Create/edit rooms and upload documents. Indexing does not wake GKE.
+6. After all meetings finish, leave the application idle. The five-minute
+   scheduler check starts a guarded suspension after 30 idle minutes.
 
-- `gcloud`, `kubectl`, `uv`, and `curl` are installed.
-- Your active `gcloud` identity can administer the RoleCallAI dev resources.
-- Application Default Credentials can read the named Firestore database.
+Participants cannot wake the runtime. A valid seat link receives the typed
+`runtime_asleep` response until an admin wakes it.
 
-Authenticate once if needed:
+## Runtime states
 
-```bash
-gcloud auth login
-gcloud auth application-default login
-```
+| State | Meaning |
+| --- | --- |
+| `SLEEPING` | Joins blocked; zero GKE nodes/pods; LiveKit/TURN services absent. |
+| `WAKING` | Nodes, Redis, ingress, certificates, LiveKit and workers are being restored. |
+| `READY` | End-to-end health passed and participant joins are enabled. |
+| `SUSPENDING` | New joins blocked while the voice plane safely scales down. |
+| `ERROR` | A transition failed; the dashboard shows progress/error and permits an admin retry. |
 
-For destructive-action safety, the script reads project and endpoint coordinates
-from the ignored `.rolecall.local.env`. It remains pinned to the configured
-region, zone, cluster, and named Firestore database and refuses to inspect
-`(default)`.
+The state and transition timestamps are durable in named Firestore. Runtime
+operations are idempotent, single-task Cloud Run Jobs. The suspend job refuses
+to proceed while an occurrence is in `LOBBY`, `STARTING`, `RUNNING`, `ENDING`,
+or `PROCESSING`.
+
+## What sleeps
+
+- both GKE pools resize to zero after autoscaling is disabled;
+- LiveKit, two ADK workers, ephemeral Redis, ingress and cert-manager scale to
+  zero;
+- LiveKit signaling and TURN Services are switched to internal `ClusterIP`
+  services, which deprovisions their load balancers while retaining both
+  reserved public IP addresses;
+- participant joins remain blocked until the next wake passes end-to-end health.
+
+## What remains
+
+| Resource | Why it remains | Idle behavior |
+| --- | --- | --- |
+| Cloud Run web/control | Login, dashboard and the Wake button must stay addressable. | Min zero; billed only while serving requests. |
+| Cloud Run async API and Jobs | Document/retention tasks and transitions. | Min zero / no task while idle. |
+| GKE zonal control plane | Preserves cluster configuration for 10–20 minute wake. | $0.10/cluster-hour before the billing-account zonal GKE credit. |
+| Reserved IPs | Keeps disposable `sslip.io` names stable. | Reserved-but-unused IPv4 pricing applies while sleeping. |
+| Firestore/GCS/Artifact Registry | Preserves rooms, sessions, documents, vectors and images. | Storage and operation based. |
+| Secret Manager/KMS | Preserves login, cookies, LiveKit credentials and seat-link recovery. | Small key/secret storage plus operations. |
+| Scheduler/Pub/Sub/Monitoring | Idle checks, retention and operational visibility. | Low-volume operation based. |
+
+There is no managed Memorystore instance. Redis is a one-replica, ephemeral
+in-cluster pod and therefore has no separate idle charge.
+
+## Local operator fallback
+
+The same guarded lifecycle can be invoked from the repository when the UI/job
+path is unavailable:
 
 ```bash
 cp .rolecall.local.env.example .rolecall.local.env
-```
+gcloud auth login
+gcloud auth application-default login
 
-## Commands
-
-Run these from the repository root:
-
-```bash
-# Read-only report
 make runtime-status
-
-# Preview every mutation; this does not stop anything
 ./scripts/dev-runtime.sh down --dry-run --yes
-
-# Suspend; requires typing rolecall-dev unless --yes is supplied
 make runtime-down
-
-# Restore and run readiness checks
 make runtime-up
 ```
 
-Automated local use may call `./scripts/dev-runtime.sh down --yes` and
-`./scripts/dev-runtime.sh up --yes`. Each operation is idempotent: if it is
-interrupted, inspect with `status` and rerun the intended command.
+`dev-runtime.sh` starts the corresponding Cloud Run Job and waits for the
+durable runtime state. It does not disable the web service, document pipeline,
+Scheduler or Pub/Sub. Operations are safe to retry after interruption.
 
-## What `down` does
+For a local emergency path that directly writes the guarded operation request,
+use `scripts/runtime-operation.py`; it is pinned to `rolecall-dev` and rejects
+an active meeting before suspension.
 
-1. Reads only aggregate-safe Firestore state and refuses to proceed if any
-   occurrence is in `LOBBY`, `STARTING`, `RUNNING`, `ENDING`, or `PROCESSING`, or
-   if the transactional outbox has unpublished work.
-2. Removes the public Cloud Run invoker binding so no participant can arrive in
-   the middle of shutdown, then pauses both Scheduler jobs.
-3. Repeats the Firestore guard. If new work appeared, it restores the access and
-   scheduler state and exits.
-4. Disables autoscaling for both node pools, scales the LiveKit and worker
-   Deployments to zero, and resizes the media and worker pools to zero nodes.
+## Credentials and participant links
 
-No room, transcript, recap, capability, secret, IP address, image, or memory is
-deleted.
+Generate or rotate the single shared credential only from a trusted terminal:
 
-## What remains and why
+```bash
+uv run --project services/rolecall-agent \
+  python scripts/rotate-admin-credentials.py \
+  --project proofroom-506314 \
+  --database rolecall-dev \
+  --secret projects/proofroom-506314/secrets/rolecall-dev-admin-credentials
+```
 
-| Retained resource | Reason | Idle cost characteristic |
-| --- | --- | --- |
-| Named Firestore database | Preserves rooms, links, history, and recap data. | Operations/storage based; low at dev volume. |
-| Memorystore Redis Basic | Google provides no stop/start action; deleting it is destructive and changes its private IP. | About $37/month in the current estimate. |
-| GKE control plane | Keeps the cluster and Terraform/Helm state recoverable. | $0-$73/month depending on the billing-account GKE credit. |
-| Load balancers and reserved IPs | Preserve the disposable LiveKit/TURN hostnames and certificates. | Forwarding-rule/IP charges continue. |
-| VPC, NAT gateway, secrets, Artifact Registry, Pub/Sub, Memory Bank | Preserve networking, credentials, images, queues, and retained memory. | Mostly low fixed or usage-based charges. |
-| Cloud Run services | Both are configured with minimum instances `0`; public control access is removed and schedulers are paused. | Zero compute while uninvoked; stored images remain. |
+The command prints the random username and 24-character password once and
+stores only the username, Argon2id hash and credential version in regional
+Secret Manager. Rotation revokes all admin sessions. Never redirect the output
+into the repository, shell history, CI logs or chat.
 
-Using the current cost model, suspending removes roughly **$345/month** of VM,
-boot-disk, and assigned-node NAT run rate. The residual is approximately
-**$60-$135/month plus low-volume storage/operations**, chiefly Redis, public
-edge resources, and possibly the GKE management fee. These are planning numbers,
-not a billing guarantee.
+Participant links are credentials too. The dashboard decrypts them only after
+an explicit request; responses are `no-store`. Regeneration revokes the prior
+link and active participant sessions.
 
-The full teardown workflow can remove the GKE cluster, Redis, load balancers,
-and all other RoleCallAI resources. It is separate because it permanently loses
-meeting data and produces new endpoints and credentials when recreated.
+## Document operations
 
-## What `up` does
+Accepted files are PDF, DOCX, PPTX, TXT and Markdown. Limits are 25 MB/file,
+20 active files, 200 MB/room, 500 pages/slides and one million extracted
+characters. Scanned/encrypted PDFs, macros, mismatched signatures and files
+without extractable text are rejected. Document changes are disabled during an
+active meeting. A failed replacement leaves the previous ready version active.
 
-1. Keeps schedulers paused while infrastructure starts.
-2. Restores two worker nodes and one media node.
-3. Restores worker autoscaling `2-6` and media autoscaling `1-3`.
-4. Waits for ingress-nginx and cert-manager, then restores one LiveKit pod and
-   two ADK worker pods.
-5. Waits for both certificates, restores public access and Scheduler, and probes
-   the Cloud Run `/readyz` endpoint and LiveKit TLS endpoint.
+Originals, chunks/vectors and metadata expire after 90 days. Participants see
+sanitized excerpts and citation chips, never the original download.
 
-Startup normally takes 10-20 minutes. If the environment remains suspended into
-a certificate renewal window, cert-manager renews after resume and startup may
-take longer.
+## Full teardown
 
-## Important Terraform rule
+For permanent deletion rather than sleep, use the separately guarded
+[full teardown and recreation runbook](FULL_TEARDOWN.md). Full teardown loses
+rooms, links, documents, transcripts, recaps and credentials.
 
-`down` intentionally creates temporary Terraform drift by setting node counts
-and node-pool autoscaling to zero and removing public Cloud Run access. Do not run
-`terraform apply` while the environment is suspended. Run `make runtime-up`
-first; it restores the values declared in Terraform, after which a plan should
-again be empty.
-
-Google documents that Cloud Run services with no minimum instances can scale to
-zero, while a Standard GKE cluster does not automatically scale the whole cluster
-to zero. The explicit node-pool resize is therefore necessary:
-
-- [Cloud Run instance autoscaling](https://docs.cloud.google.com/run/docs/about-instance-autoscaling)
-- [GKE cluster autoscaler behavior](https://docs.cloud.google.com/kubernetes-engine/docs/concepts/cluster-autoscaler)
-- [GKE resize command](https://docs.cloud.google.com/sdk/gcloud/reference/container/clusters/resize)
-- [Memorystore instance management](https://docs.cloud.google.com/memorystore/docs/redis/create-manage-instances)
+References: [Cloud Run autoscaling](https://docs.cloud.google.com/run/docs/about-instance-autoscaling),
+[GKE cluster autoscaler behavior](https://docs.cloud.google.com/kubernetes-engine/docs/concepts/cluster-autoscaler),
+and [GKE resize](https://docs.cloud.google.com/sdk/gcloud/reference/container/clusters/resize).

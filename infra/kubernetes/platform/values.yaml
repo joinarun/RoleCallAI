@@ -7,3 +7,4 @@ livekitService: livekit-server
 secrets:
   livekitApiKey: ""
   livekitApiSecret: ""
+  redisPassword: ""

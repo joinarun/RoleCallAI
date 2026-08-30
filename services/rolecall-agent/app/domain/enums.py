@@ -56,6 +56,7 @@ class OutcomeKind(StrEnum):
 
 
 class CapabilityKind(StrEnum):
+    # ADMIN is retained only so old capability records can be parsed during migration.
     ADMIN = "ADMIN"
     SEAT = "SEAT"
 
@@ -64,3 +65,20 @@ class FloorOwnerType(StrEnum):
     AGENT = "AGENT"
     SEAT = "SEAT"
     NONE = "NONE"
+
+
+class RuntimeStatus(StrEnum):
+    SLEEPING = "SLEEPING"
+    WAKING = "WAKING"
+    READY = "READY"
+    SUSPENDING = "SUSPENDING"
+    ERROR = "ERROR"
+
+
+class DocumentStatus(StrEnum):
+    PENDING = "PENDING"
+    INDEXING = "INDEXING"
+    READY = "READY"
+    FAILED = "FAILED"
+    DELETING = "DELETING"
+    DELETED = "DELETED"

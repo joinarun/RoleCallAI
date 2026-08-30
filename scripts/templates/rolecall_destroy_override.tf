@@ -17,3 +17,19 @@ resource "google_firestore_database" "rolecall" {
 resource "google_container_cluster" "rolecall" {
   deletion_protection = false
 }
+
+resource "google_kms_crypto_key" "seat_links" {
+  lifecycle {
+    prevent_destroy = false
+  }
+}
+
+resource "google_secret_manager_secret" "admin_credentials" {
+  lifecycle {
+    prevent_destroy = false
+  }
+}
+
+resource "google_storage_bucket" "documents" {
+  force_destroy = true
+}

@@ -1,8 +1,7 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
 import { AlertTriangle, ArrowLeft, ArrowRight, Brain, CalendarClock, Check, ClipboardList, Code2, Gamepad2, GraduationCap, Lightbulb, Link2, ListChecks, LockKeyhole, Megaphone, Scale, Search, Sparkles, Users, Wrench } from "lucide-react";
-import { api, jsonBody } from "../lib/api";
-import { saveRoomLinks } from "../lib/linkVault";
+import { jsonBody } from "../lib/api";
+import { adminApi } from "../lib/adminSession";
 import type { GameType, RoleType, RoomCreated } from "../types";
 import { CopyButton } from "../components/CopyButton";
 import { ROLE_PRESET_BY_ID, ROLE_PRESETS } from "../rolePresets";
@@ -58,7 +57,6 @@ export function CreateRoomPage({
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const wizardHeadingRef = useRef<HTMLHeadingElement>(null);
-  const navigate = useNavigate();
   const role = useMemo(() => roles.find((item) => item.id === draft.role)!, [draft.role]);
 
   function update<K extends keyof Draft>(key: K, value: Draft[K]) {
@@ -86,14 +84,13 @@ export function CreateRoomPage({
     setBusy(true);
     setError("");
     try {
-      const result = await api<RoomCreated>("/v1/rooms", {
+      const result = await adminApi<RoomCreated>("/v1/admin/rooms", {
         method: "POST",
         ...jsonBody({
           ...draft,
           game: draft.role === "FUN_FRIDAY" ? draft.game : null,
         }),
       });
-      saveRoomLinks(result);
       onRoomCreated?.(result);
       setCreated(result);
     } catch (reason) {
@@ -106,12 +103,11 @@ export function CreateRoomPage({
   if (created) {
     return (
       <section className="success-layout">
-        <div className="success-hero"><div className="success-check"><Check /></div><p className="eyebrow mint">Room ready</p><h1>{created.room.name}</h1><p>These are the only copies of the secret links. Store the admin link safely and share each seat link with one person.</p></div>
+        <div className="success-hero"><div className="success-check"><Check /></div><p className="eyebrow mint">Room ready</p><h1>{created.room.name}</h1><p>Share each participant link with one person. You can securely recover or rotate these links from the admin dashboard.</p></div>
         <div className="link-vault">
-          <div className="vault-header"><div><LockKeyhole /><span>One-time link vault</span></div><span className="badge pending">Not recoverable</span></div>
-          <div className="link-row admin-link"><div><small>ADMIN MANAGEMENT LINK</small><strong>Controls room settings and history</strong></div><CopyButton value={created.adminUrl} /></div>
+          <div className="vault-header"><div><LockKeyhole /><span>Participant links</span></div><span className="badge good">KMS protected</span></div>
           <div className="seat-link-grid">{created.seatUrls.map((seat, index) => <div className="seat-link" key={seat.slotId}><span className="seat-number">{String(index + 1).padStart(2, "0")}</span><div><small>PARTICIPANT SEAT</small><strong>Invite {index + 1}</strong></div><CopyButton value={seat.url} label="Copy" /></div>)}</div>
-          <div className="success-actions"><button className="button primary wide" onClick={() => navigate(new URL(created.adminUrl).pathname + new URL(created.adminUrl).hash)}><span>Open admin room</span><ArrowRight size={18} /></button>{onShowWorkspace && <button className="button ghost wide" onClick={onShowWorkspace}>View home workspace</button>}</div>
+          <div className="success-actions">{onShowWorkspace && <button className="button primary wide" onClick={onShowWorkspace}>Return to dashboard <ArrowRight size={18} /></button>}</div>
         </div>
       </section>
     );

@@ -12,6 +12,11 @@ resource "random_password" "cookie_signing_key" {
   special = false
 }
 
+resource "random_password" "redis_password" {
+  length  = 40
+  special = false
+}
+
 locals {
   secret_values = {
     cookie-signing-key = random_password.cookie_signing_key.result
@@ -27,7 +32,46 @@ locals {
     jobs-secret    = { account = "jobs", secret = "livekit-api-secret" }
     worker-key     = { account = "worker", secret = "livekit-api-key" }
     worker-secret  = { account = "worker", secret = "livekit-api-secret" }
+    runtime-cookie = { account = "runtime_manager", secret = "cookie-signing-key" }
   }
+}
+
+resource "google_secret_manager_secret" "admin_credentials" {
+  secret_id = "${local.prefix}-admin-credentials"
+  labels    = var.labels
+
+  replication {
+    user_managed {
+      replicas {
+        location = var.region
+      }
+    }
+  }
+
+  lifecycle {
+    prevent_destroy = true
+  }
+
+  depends_on = [google_project_service.required]
+}
+
+resource "google_secret_manager_secret_iam_member" "admin_credentials_control" {
+  project   = var.project_id
+  secret_id = google_secret_manager_secret.admin_credentials.secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.rolecall["control"].email}"
+}
+
+# Cloud Run requires the referenced `latest` version to exist before the first
+# revision can be created. This value is intentionally not a usable credential;
+# the trusted-terminal rotation script adds the first real Argon2id version.
+resource "google_secret_manager_secret_version" "admin_credentials_bootstrap" {
+  secret = google_secret_manager_secret.admin_credentials.id
+  secret_data = jsonencode({
+    username      = "disabled-until-rotated"
+    password_hash = "invalid-argon2id-hash"
+    version       = 0
+  })
 }
 
 resource "google_secret_manager_secret" "rolecall" {

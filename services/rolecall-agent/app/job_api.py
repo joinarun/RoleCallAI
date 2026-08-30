@@ -20,6 +20,7 @@ from app.jobs.cleanup import (
 )
 from app.jobs.outbox import drain_outbox
 from app.jobs.postprocessor import process_occurrence
+from app.jobs.runtime_dispatch import dispatch_runtime_job
 from app.observability import configure_observability
 
 logger = logging.getLogger("rolecall.jobs")
@@ -117,6 +118,30 @@ async def room_cleanup(request: Request, envelope: PubSubEnvelope):  # type: ign
     )
 
 
+@app.post("/v1/internal/pubsub/document-index")
+async def document_index(request: Request, envelope: PubSubEnvelope):  # type: ignore[no-untyped-def]
+    await verify_push(request)
+    payload = decode_pubsub(envelope)
+    if payload.get("action") != "indexDocument":
+        raise ValueError("Unknown document-index action")
+    count = await asyncio.to_thread(
+        request.app.state.container.document_indexer.process,
+        str(payload["roomId"]),
+        str(payload["versionId"]),
+    )
+    return {"status": "indexed", "chunks": count}
+
+
+@app.post("/v1/internal/pubsub/runtime")
+async def runtime_dispatch(request: Request, envelope: PubSubEnvelope):  # type: ignore[no-untyped-def]
+    await verify_push(request)
+    payload = decode_pubsub(envelope)
+    operation = await asyncio.to_thread(
+        dispatch_runtime_job, request.app.state.container.settings, payload
+    )
+    return {"status": "dispatched", "operation": operation}
+
+
 @app.post("/v1/internal/jobs/drain-outbox")
 async def publish_outbox(request: Request):  # type: ignore[no-untyped-def]
     await verify_push(request)
@@ -130,3 +155,10 @@ async def publish_outbox(request: Request):  # type: ignore[no-untyped-def]
 async def retention_cleanup(request: Request):  # type: ignore[no-untyped-def]
     await verify_push(request)
     return await asyncio.to_thread(cleanup_expired, request.app.state.container)
+
+
+@app.post("/v1/internal/jobs/runtime-idle-check")
+async def runtime_idle_check(request: Request):  # type: ignore[no-untyped-def]
+    await verify_push(request)
+    state = await asyncio.to_thread(request.app.state.container.runtime.begin_suspend_if_idle)
+    return state

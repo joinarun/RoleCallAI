@@ -1,0 +1,55 @@
+sequenceDiagram
+    autonumber
+    actor Admin
+    actor P as Participants
+    participant Web as Cloud Run web/control
+    participant Sec as reCAPTCHA + Secret Manager + KMS
+    participant DB as Firestore rolecall-dev
+    participant Q as Pub/Sub / async jobs
+    participant Store as Cloud Storage
+    participant Runtime as Runtime job + GKE
+    participant LK as LiveKit
+    participant Agent as ADK voice worker
+    participant AI as Vertex AI Gemini
+    Admin->>Web: Login with CAPTCHA
+    Web->>Sec: Verify risk and credential version
+    Web->>DB: Throttle and create 8-hour session
+    opt Runtime is sleeping
+      Admin->>Web: Wake voice services
+      Web->>Runtime: Start idempotent wake job
+      Runtime->>LK: Restore nodes, 9 pods, TLS and media
+      Runtime->>DB: Mark READY
+    end
+    Admin->>Web: Create room
+    Web->>Sec: KMS-encrypt seat links
+    opt Add context
+      Admin->>Web: Upload document
+      Web->>Store: Save immutable original
+      Web->>Q: Index event
+      Q->>AI: Generate 768D embeddings
+      Q->>DB: Save sanitized vectors and citations
+    end
+    loop Each participant
+      P->>Web: Exchange fragment seat capability
+      Web->>DB: Verify digest and create/join occurrence
+      Web-->>P: LiveKit JWT when runtime READY
+      P->>LK: Join audio room
+    end
+    LK->>Agent: Dispatch facilitator
+    Agent->>AI: Resumable Gemini Live session
+    loop Controlled floor turns
+      Agent->>LK: Grant mic only to floor owner
+      P->>Agent: Speaker audio / hand raise
+      opt Relevant document context
+        AI->>Agent: search_room_docs(query)
+        Agent->>DB: Room + frozen-version vector search
+      end
+      AI-->>Agent: Native audio and final caption
+      Agent-->>P: Voice, captions and citation chips
+      Agent->>DB: Final text/outcomes/citations only
+    end
+    Agent-->>P: Spoken closing recap
+    Agent->>Q: Post-process
+    Q->>AI: Typed summary
+    Q->>DB: Recap + memory and mark COMPLETED
+    Note over Web,Runtime: 30 idle minutes triggers guarded suspension to zero voice nodes/pods.

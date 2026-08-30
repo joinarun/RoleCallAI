@@ -36,9 +36,11 @@ from app.live.watchdog import (
     WatchdogAction,
 )
 from app.observability import configure_observability
+from app.retrieval.indexing import DocumentRetrievalService, EmbeddingService
 from app.retrieval.memory import RoomMemoryService
 from app.services.livekit import LiveKitService
 from app.services.meetings import MeetingService
+from app.services.runtime import RuntimeService
 from app.storage.factory import get_repository
 
 logger = logging.getLogger("rolecall.worker")
@@ -80,7 +82,9 @@ async def meeting_entrypoint(ctx: JobContext) -> None:
     room = repository.get_room(occurrence.room_id)
     meetings = MeetingService(repository, settings)
     memory = RoomMemoryService(settings)
+    document_retrieval = DocumentRetrievalService(repository, EmbeddingService(settings), settings)
     livekit = LiveKitService(settings)
+    runtime = RuntimeService(repository, settings)
     deferred_finish = DeferredFinishCoordinator()
     response_watchdog = AgentResponseWatchdog(
         response_timeout_seconds=settings.agent_response_watchdog_seconds,
@@ -94,6 +98,7 @@ async def meeting_entrypoint(ctx: JobContext) -> None:
         repository=repository,
         meetings=meetings,
         memory=memory,
+        documents=document_retrieval,
         defer_finish=deferred_finish.request,
     )
 
@@ -121,6 +126,7 @@ async def meeting_entrypoint(ctx: JobContext) -> None:
     last_human_final_at: float | None = None
     last_human_audio_slot_id: str | None = None
     last_agent_caption = ""
+    published_citation_count = len(occurrence.retrieval_citations)
     last_controller_heartbeat = time.monotonic()
     audio_stream_open = False
     # The controller refreshes this snapshot at 2 Hz. Audio callbacks must not
@@ -273,7 +279,7 @@ async def meeting_entrypoint(ctx: JobContext) -> None:
     async def persist_caption(
         speaker_type: FloorOwnerType, speaker_id: str, speaker_name: str, text: str
     ) -> None:
-        nonlocal last_agent_caption, last_human_final_at
+        nonlocal last_agent_caption, last_human_final_at, published_citation_count
         existing_segments = await asyncio.to_thread(
             repository.list_transcript_segments, occurrence_id
         )
@@ -292,7 +298,17 @@ async def meeting_entrypoint(ctx: JobContext) -> None:
             expires_at=now + timedelta(days=settings.retention_days),
         )
         await asyncio.to_thread(repository.save_transcript_segment, segment)
-        await publish_message("caption.final", segment.model_dump(mode="json"))
+        payload = segment.model_dump(mode="json")
+        if speaker_type == FloorOwnerType.AGENT:
+            current = await asyncio.to_thread(repository.get_occurrence, occurrence_id)
+            new_citations = current.retrieval_citations[published_citation_count:]
+            if new_citations:
+                payload["citations"] = [item.model_dump(mode="json") for item in new_citations]
+                for citation in new_citations:
+                    await publish_message("citation", citation.model_dump(mode="json"))
+                published_citation_count = len(current.retrieval_citations)
+        await publish_message("caption.final", payload)
+        await asyncio.to_thread(runtime.activity)
         if speaker_type == FloorOwnerType.SEAT:
             last_human_final_at = time.perf_counter()
         elif speaker_type == FloorOwnerType.AGENT:

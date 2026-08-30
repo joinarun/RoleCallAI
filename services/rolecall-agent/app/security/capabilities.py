@@ -39,7 +39,7 @@ class CapabilityService:
         self, room_id: str, token: str, now: datetime | None = None
     ) -> tuple[str, CapabilityClaims]:
         timestamp = now or datetime.now(UTC)
-        record = self.verify_token(room_id, token)
+        record = self.verify_token(room_id, token, CapabilityKind.SEAT)
 
         raw_session_id = secrets.token_urlsafe(32)
         claims = CapabilityClaims(
@@ -102,12 +102,6 @@ class CapabilityService:
             raise UnauthorizedError("Capability has been revoked")
         return session.claims
 
-    def require_admin(self, cookie: str | None) -> CapabilityClaims:
-        claims = self.authenticate(cookie)
-        if claims.kind != CapabilityKind.ADMIN:
-            raise UnauthorizedError("Admin capability required")
-        return claims
-
     def require_seat(self, cookie: str | None) -> CapabilityClaims:
         claims = self.authenticate(cookie)
         if claims.kind != CapabilityKind.SEAT or not claims.slot_id:
@@ -116,13 +110,8 @@ class CapabilityService:
 
     def _current_record(self, claims: CapabilityClaims) -> CapabilityRecord | None:
         room = self.repository.get_room(claims.room_id)
-        if claims.kind == CapabilityKind.ADMIN:
-            return CapabilityRecord(
-                room_id=room.id,
-                kind=CapabilityKind.ADMIN,
-                digest=room.admin_capability_digest,
-                version=room.admin_capability_version,
-            )
+        if claims.kind != CapabilityKind.SEAT:
+            return None
         slot = next((item for item in room.slots if item.id == claims.slot_id), None)
         if slot is None:
             return None

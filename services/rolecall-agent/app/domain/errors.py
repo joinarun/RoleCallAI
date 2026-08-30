@@ -31,5 +31,10 @@ class RateLimitError(RoleCallError):
     status_code = 429
 
 
+class RuntimeAsleepError(RoleCallError):
+    code = "runtime_asleep"
+    status_code = 503
+
+
 class InvalidTransitionError(ConflictError):
     code = "invalid_transition"

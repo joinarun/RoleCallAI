@@ -134,6 +134,9 @@ def validate_recap(node_input: dict[str, Any]) -> Event:
     ]
     if invalid_owners:
         raise ValueError("Recap contains an owner outside this occurrence")
+    # Retrieval citations are controller-owned. The summary model cannot invent,
+    # modify, or broaden document evidence.
+    recap.citations = occurrence.retrieval_citations
     return Event(output=recap.model_dump(mode="json"))
 
 

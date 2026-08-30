@@ -9,11 +9,13 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from app.domain.enums import (
     CapabilityKind,
+    DocumentStatus,
     FloorOwnerType,
     GameType,
     OccurrenceStatus,
     OutcomeKind,
     RoleType,
+    RuntimeStatus,
 )
 from app.domain.normalization import clean_display_text, normalize_room_name
 
@@ -94,6 +96,7 @@ class Seat(DomainModel):
     id: str
     ordinal: int
     capability_digest: str
+    capability_ciphertext: str | None = None
     capability_version: int = 1
     last_display_name: str | None = None
     can_end_meeting: bool = False
@@ -109,7 +112,11 @@ class Room(DomainModel):
     agent_name: str
     instructions: str
     game: GameType | None = None
-    admin_capability_digest: str
+    owner_id: str = "shared-demo-admin"
+    security_migration_version: int = 0
+    # Legacy fields are nullable so existing records can be migrated without making
+    # old admin capabilities usable by new API code.
+    admin_capability_digest: str | None = None
     admin_capability_version: int = 1
     slots: list[Seat]
     occurrence_counter: int = 0
@@ -154,6 +161,19 @@ class GameResult(DomainModel):
     slot_id: str | None = None
 
 
+class RetrievalCitation(DomainModel):
+    document_id: str
+    version_id: str
+    title: str
+    version: int
+    excerpt: Annotated[str, Field(max_length=1800)]
+    page_start: int | None = None
+    page_end: int | None = None
+    slide_start: int | None = None
+    slide_end: int | None = None
+    distance: float | None = None
+
+
 class MeetingRecap(DomainModel):
     summary: str
     decisions: list[str] = Field(default_factory=list)
@@ -161,6 +181,7 @@ class MeetingRecap(DomainModel):
     blockers: list[str] = Field(default_factory=list)
     ideas: list[str] = Field(default_factory=list)
     game_results: list[GameResult] = Field(default_factory=list)
+    citations: list[RetrievalCitation] = Field(default_factory=list)
     generated_at: datetime = Field(default_factory=utc_now)
 
 
@@ -201,6 +222,9 @@ class Occurrence(DomainModel):
     outcomes: list[Outcome] = Field(default_factory=list)
     recap: MeetingRecap | None = None
     previous_recap: MeetingRecap | None = None
+    ready_document_version_ids: list[str] = Field(default_factory=list)
+    omitted_document_count: int = 0
+    retrieval_citations: list[RetrievalCitation] = Field(default_factory=list)
     memory_persisted_at: datetime | None = None
     sequence: int = 0
     agent_last_seen_at: datetime | None = None
@@ -242,9 +266,92 @@ class OutboxRecord(DomainModel):
     attempts: int = 0
 
 
+class AdminSession(DomainModel):
+    session_digest: str
+    owner_id: str = "shared-demo-admin"
+    credential_version: int
+    csrf_digest: str
+    created_at: datetime = Field(default_factory=utc_now)
+    expires_at: datetime
+    revoked_at: datetime | None = None
+    source_prefix_hash: str | None = None
+
+
+class LoginThrottle(DomainModel):
+    key: str
+    failures: list[datetime] = Field(default_factory=list)
+    expires_at: datetime
+
+
+class RuntimeState(DomainModel):
+    status: RuntimeStatus
+    progress: Annotated[int, Field(ge=0, le=100)] = 0
+    message: str = ""
+    generation: int = 0
+    operation_id: str | None = None
+    last_activity_at: datetime
+    last_activity_write_at: datetime
+    transition_started_at: datetime | None = None
+    ready_at: datetime | None = None
+    sleeping_at: datetime | None = None
+    error_code: str | None = None
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class DocumentVersion(DomainModel):
+    id: str
+    room_id: str
+    document_id: str
+    version: Annotated[int, Field(ge=1)]
+    original_filename: str
+    title: str
+    media_type: str
+    extension: str
+    object_name: str
+    size_bytes: Annotated[int, Field(ge=0)]
+    status: DocumentStatus = DocumentStatus.PENDING
+    error_code: str | None = None
+    error_message: str | None = None
+    page_count: int | None = None
+    slide_count: int | None = None
+    character_count: int | None = None
+    chunk_count: int | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+    ready_at: datetime | None = None
+    expires_at: datetime
+
+
+class RoomDocument(DomainModel):
+    id: str
+    room_id: str
+    title: str
+    active_version_id: str | None = None
+    pending_version_id: str | None = None
+    version_counter: int = 0
+    deleted_at: datetime | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class DocumentChunk(DomainModel):
+    id: str
+    room_id: str
+    document_id: str
+    version_id: str
+    title: str
+    version: int
+    text: Annotated[str, Field(max_length=12000)]
+    page_start: int | None = None
+    page_end: int | None = None
+    slide_start: int | None = None
+    slide_end: int | None = None
+    embedding: list[float] = Field(default_factory=list)
+    expires_at: datetime
+
+
 class RoomCreatedResponse(DomainModel):
     room: RoomView
-    admin_url: str
     seat_urls: list[dict[str, str]]
 
 
@@ -395,17 +502,6 @@ class HistoryItem(DomainModel):
     duration_seconds: int | None = None
 
 
-class DashboardRoomCredential(DomainModel):
-    room_id: str
-    token: Annotated[str, Field(min_length=32, max_length=512)]
-
-
-class DashboardRoomsRequest(DomainModel):
-    rooms: Annotated[list[DashboardRoomCredential], Field(max_length=50)] = Field(
-        default_factory=list
-    )
-
-
 class DashboardRoomItem(DomainModel):
     room: RoomView
     current_occurrence: Occurrence | None = None
@@ -414,7 +510,34 @@ class DashboardRoomItem(DomainModel):
 
 class DashboardRoomsResponse(DomainModel):
     rooms: list[DashboardRoomItem] = Field(default_factory=list)
-    unavailable_room_ids: list[str] = Field(default_factory=list)
+
+
+class AdminLoginRequest(DomainModel):
+    username: Annotated[str, Field(min_length=1, max_length=120)]
+    password: Annotated[str, Field(min_length=1, max_length=256)]
+    recaptcha_token: Annotated[str, Field(min_length=1, max_length=8192)]
+
+
+class AdminSessionView(DomainModel):
+    authenticated: bool
+    username: str
+    owner_id: str
+    expires_at: datetime
+    csrf_token: str
+
+
+class SeatLinkView(DomainModel):
+    slot_id: str
+    ordinal: int
+    url: str
+    last_display_name: str | None = None
+    can_end_meeting: bool = False
+
+
+class DocumentView(DomainModel):
+    document: RoomDocument
+    active_version: DocumentVersion | None = None
+    pending_version: DocumentVersion | None = None
 
 
 class LiveKitMessage(DomainModel):

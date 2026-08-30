@@ -1,0 +1,10 @@
+stateDiagram-v2
+    [*] --> LOBBY: first valid arrival
+    LOBBY --> STARTING: all seats present or grace start
+    STARTING --> RUNNING: worker and Gemini ready
+    RUNNING --> ENDING: timer or authorized end
+    ENDING --> PROCESSING: spoken close completes
+    PROCESSING --> COMPLETED: recap and memory persisted
+    STARTING --> FAILED: unrecoverable startup
+    RUNNING --> PROCESSING: preserve partial meeting after worker failure
+    PROCESSING --> FAILED: post-processing recovery exhausted

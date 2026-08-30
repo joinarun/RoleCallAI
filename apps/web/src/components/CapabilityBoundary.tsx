@@ -9,7 +9,7 @@ export function CapabilityBoundary({
   children,
 }: {
   roomId: string;
-  expected: "ADMIN" | "SEAT";
+  expected: "SEAT";
   children: (slotId?: string) => ReactNode;
 }) {
   const state = useCapability(roomId, expected);

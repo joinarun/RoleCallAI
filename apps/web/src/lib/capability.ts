@@ -1,21 +1,20 @@
 import { useEffect, useState } from "react";
 import { api, jsonBody } from "./api";
-import { rememberSeat, storedCapabilityToken } from "./linkVault";
 
 const fragmentTokens = new Map<string, string>();
 
 type CapabilityState =
   | { status: "exchanging" }
-  | { status: "ready"; scope: "ADMIN" | "SEAT"; slotId?: string }
+  | { status: "ready"; scope: "SEAT"; slotId?: string }
   | { status: "error"; message: string };
 
 type CapabilitySession = {
   roomId: string;
-  scope: "ADMIN" | "SEAT";
+  scope: "SEAT";
   slotId?: string;
 };
 
-export function useCapability(roomId: string, expectedScope: "ADMIN" | "SEAT"): CapabilityState {
+export function useCapability(roomId: string, expectedScope: "SEAT"): CapabilityState {
   const [state, setState] = useState<CapabilityState>({ status: "exchanging" });
 
   useEffect(() => {
@@ -26,16 +25,12 @@ export function useCapability(roomId: string, expectedScope: "ADMIN" | "SEAT"): 
       fragmentTokens.set(roomId, fragmentToken);
       history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
     }
-    const token =
-      fragmentToken ??
-      fragmentTokens.get(roomId) ??
-      storedCapabilityToken(roomId, expectedScope);
+    const token = fragmentToken ?? fragmentTokens.get(roomId);
 
     function accept(session: CapabilitySession) {
       if (session.roomId !== roomId || session.scope !== expectedScope) {
         throw new Error("The current private link belongs to a different room.");
       }
-      if (session.scope === "SEAT" && session.slotId) rememberSeat(roomId, session.slotId);
       if (!cancelled) setState({ status: "ready", ...session });
     }
 

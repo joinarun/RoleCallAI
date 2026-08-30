@@ -8,6 +8,14 @@ locals {
       topic = "rolecall-cleanup"
       path  = "/v1/internal/pubsub/cleanup"
     }
+    document_index = {
+      topic = "rolecall-document-index"
+      path  = "/v1/internal/pubsub/document-index"
+    }
+    runtime = {
+      topic = "rolecall-runtime-control"
+      path  = "/v1/internal/pubsub/runtime"
+    }
   }
 }
 
@@ -125,6 +133,36 @@ resource "google_cloud_scheduler_job" "cleanup" {
 
   http_target {
     uri         = "${local.jobs_url}/v1/internal/jobs/cleanup"
+    http_method = "POST"
+    headers = {
+      "Content-Type" = "application/json"
+    }
+    oidc_token {
+      service_account_email = google_service_account.rolecall["scheduler"].email
+      audience              = local.jobs_url
+    }
+  }
+
+  depends_on = [google_cloud_run_v2_service_iam_member.jobs_invoker]
+}
+
+resource "google_cloud_scheduler_job" "runtime_idle_check" {
+  name             = "${local.prefix}-runtime-idle-check"
+  description      = "Suspend the voice plane after 30 minutes without genuine activity"
+  region           = var.region
+  schedule         = "*/5 * * * *"
+  time_zone        = "Etc/UTC"
+  attempt_deadline = "320s"
+
+  retry_config {
+    retry_count          = 3
+    min_backoff_duration = "10s"
+    max_backoff_duration = "120s"
+    max_doublings        = 3
+  }
+
+  http_target {
+    uri         = "${local.jobs_url}/v1/internal/jobs/runtime-idle-check"
     http_method = "POST"
     headers = {
       "Content-Type" = "application/json"

@@ -1,171 +1,126 @@
 # Full teardown and recreation runbook
 
 `scripts/full-environment.sh` is the irreversible, near-zero-idle-cost lifecycle
-tool for the RoleCallAI development environment. It is pinned to project
-and endpoint coordinates in the ignored `.rolecall.local.env`, and to the named
+tool for the RoleCallAI development environment. It is pinned by the ignored
+`.rolecall.local.env` to project `proofroom-506314`, `europe-west4`, and named
 Firestore database `rolecall-dev`.
 
-## Choose suspend or destroy
+## Sleep or destroy
 
-| Goal | Command | Data and links | Endpoints | Expected residual RoleCallAI fixed cost |
-| --- | --- | --- | --- | --- |
-| Pause for a short period | `make runtime-down` | Preserved | Preserved | About $59–$132/month plus usage |
-| Remove the environment | `make environment-destroy` | Permanently deleted | Deleted | Approximately $0; shared/history costs may remain |
+| Goal | Command | Data/endpoints |
+| --- | --- | --- |
+| Pause voice use | `make runtime-down` | Preserves the app, rooms, links, documents, history, IPs and credentials. |
+| Remove RoleCallAI | `make environment-destroy` | Permanently deletes Terraform-managed RoleCallAI resources and data. |
 
-Use suspend/resume when you expect to continue with the same rooms, links,
-history, credentials, IPs, and hostnames. Use full teardown only when permanent
-data loss and a later clean deployment are acceptable.
+Use sleep for normal cost control. Destroy only when losing all RoleCallAI data
+and creating new endpoints/credentials later is acceptable.
 
-## Permanent deletion boundary
+## Deletion boundary
 
-`environment-destroy` deletes every resource managed by this RoleCallAI
-Terraform state, including:
+The destroy workflow removes:
 
-- the `rolecall-dev` named Firestore database and all rooms, invite digests,
-  attendance, transcripts, recaps, outcomes, and outbox records;
-- Agent Platform Memory Bank data;
-- Memorystore Redis and its transient capability/rate-limit state;
-- the GKE cluster, node pools, LiveKit/worker pods, Kubernetes releases,
-  load balancers, reserved addresses, certificates, VPC, subnet, NAT, and
-  firewall rules;
-- both Cloud Run services, Pub/Sub topics/subscriptions, Scheduler jobs,
-  monitoring resources, Secret Manager secrets and versions;
-- the RoleCallAI Artifact Registry repository and all three application images;
-- RoleCallAI service accounts and Terraform-managed IAM bindings.
+- the named `rolecall-dev` Firestore database, including admin sessions, rooms,
+  participant capability digests/ciphertexts, documents/chunks/vectors,
+  transcripts, recaps and runtime state;
+- the private document bucket and immutable originals;
+- the Agent Platform Memory Bank;
+- the GKE cluster, ephemeral Redis, node pools, LiveKit/ADK workloads,
+  load balancers, reserved IPs, certificates, VPC, subnet, NAT and firewalls;
+- Cloud Run web/jobs services and both runtime Jobs;
+- Pub/Sub event/dead-letter topics, subscriptions and all three Scheduler jobs;
+- the reCAPTCHA key, Cloud KMS seat-link key, four Secret Manager secrets and
+  all RoleCallAI service accounts/IAM bindings;
+- the Artifact Registry repository and application images;
+- RoleCallAI Monitoring dashboards, alerts and log-based metrics.
 
-The script explicitly verifies and preserves the unrelated `(default)`
-Firestore database in its configured expected location. It also leaves enabled project APIs,
-Google-managed service identities, historical Cloud Logging/Cloud Build records,
-and the project-wide Cloud Build source-staging bucket. Those are shared or
-historical project resources, and removing them could affect workloads outside
-RoleCallAI. APIs have no idle charge merely for being enabled, although retained
-logs or staging objects can have small storage charges.
+The workflow verifies that the unrelated `(default)` Firestore database still
+exists at its configured location. It intentionally leaves project APIs enabled,
+Google-managed service identities, historical Logging/Build records and the
+shared Cloud Build staging bucket. Those may be shared with other workloads and
+can retain small historical storage costs.
 
-Recreation does not recover deleted data. It generates new secrets, Memory Bank
-identity, reserved IPs, `sslip.io` hostnames, room capabilities, and participant
-links.
+Recreation cannot recover deleted data. It generates new login credentials,
+participant capabilities, KMS/Secret versions, Memory Bank identity, IPs and
+`sslip.io` endpoints.
 
-## Prerequisites and safety rules
-
-- Run from the repository that contains the current local Terraform state.
-- Keep that state and `local-data/` private; saved plans can contain secrets.
-- Authenticate `gcloud` and Application Default Credentials with an identity
-  allowed to administer the project.
-- Do not run this script, Terraform, `dev-runtime.sh`, or another deployment
-  concurrently. The script uses an exact local operation lock and refuses a
-  second teardown/recreate process from this workspace.
-- Never run `create` while `status` reports `PARTIAL`. Finish teardown by
-  rerunning `destroy` first.
-
-Create the ignored local configuration from the sanitized template before the
-first operation:
+## Prerequisites
 
 ```bash
 cp .rolecall.local.env.example .rolecall.local.env
-```
-
-```bash
 gcloud auth login
 gcloud auth application-default login
 make environment-status
 ```
 
+- Run from this repository with its current private Terraform state.
+- Never commit `.rolecall.local.env`, Terraform state, saved plans or generated
+  credentials.
+- Do not run Terraform, sleep/wake or another lifecycle command concurrently.
+- Never run create while status is `PARTIAL`; finish destroy first.
+
 ## Destroy
 
-First run the read-only preview:
+Preview every mutation first:
 
 ```bash
 ./scripts/full-environment.sh destroy --dry-run
 ```
 
-The preview checks the project and `(default)` database, validates Terraform,
-checks for active meetings and pending outbox work, and shows the protection
-changes and destruction sequence without mutating Google Cloud.
-
-Run the permanent teardown interactively:
+Then run the guarded operation:
 
 ```bash
 make environment-destroy
 ```
 
-The first prompt requires:
+The interactive confirmation is:
 
 ```text
-DELETE rolecall-dev FROM your-gcp-project-id
-```
-
-After generating the saved destroy plan, the script asks for a second phrase
-containing the current Terraform entry count. This prevents a stale assumption
-about the deletion scope. For controlled non-interactive use, the equivalent is:
-
-```bash
-./scripts/full-environment.sh destroy \
-  --confirm-token delete-your-gcp-project-id-rolecall-dev
-```
-
-The destroy sequence is:
-
-1. Refuse deletion while any occurrence is active or outbox work is pending.
-2. Remove public Cloud Run access and pause Scheduler, then repeat the guard.
-3. Temporarily disable deletion protection on only `rolecall-dev` Firestore and
-   the `rolecall-dev` GKE cluster.
-4. Generate and apply a saved Terraform destroy plan.
-5. Require an empty managed Terraform state, absence of the named database, and
-   continued presence of the configured `(default)` database.
-6. Save a local deletion timestamp used to honor Firestore's database-ID reuse
-   delay during recreation.
-
-Allow roughly 20–40 minutes. GKE, Redis, private service networking, and
-Firestore deletion can account for most of that time.
-
-## Create
-
-Preview the clean-deployment sequence without changing Google Cloud:
-
-```bash
-./scripts/full-environment.sh create --dry-run
-```
-
-Then recreate the full billable environment:
-
-```bash
-make environment-create
-```
-
-The confirmation phrase is:
-
-```text
-CREATE rolecall-dev IN your-gcp-project-id
+DELETE rolecall-dev FROM proofroom-506314
 ```
 
 For controlled non-interactive use:
 
 ```bash
-./scripts/full-environment.sh create \
-  --confirm-token create-your-gcp-project-id-rolecall-dev
+./scripts/full-environment.sh destroy \
+  --confirm-token delete-proofroom-506314-rolecall-dev
 ```
 
-Creation runs all local unit tests and linters before spending money. It then:
+The script refuses active occurrences or pending outbox work, freezes the three
+Scheduler jobs, applies a narrowly scoped Terraform override for protected
+Firestore/KMS/Secret/GCS resources, creates a saved destroy plan, requests a
+second count-aware confirmation, applies it, and then requires an empty managed
+state. It also records the deletion time for Firestore's database-ID reuse
+window. Allow roughly 20–40 minutes.
 
-1. bootstraps required APIs, the Cloud Build service account and IAM, and the
-   empty Artifact Registry repository with a targeted Terraform apply;
-2. builds and pushes the control, jobs, and worker images with Cloud Build;
-3. waits for Firestore's database-ID reuse window if the destroy was recent;
-4. creates and applies a saved full Terraform plan;
-5. waits for LiveKit and worker rollouts and TLS certificates;
-6. probes the Cloud Run readiness and LiveKit TLS endpoints, rechecks the
-   `(default)` database, and requires a final no-change Terraform plan.
+## Recreate
 
-Allow roughly 30–60 minutes. Certificate issuance, GKE node provisioning, image
-builds, and API propagation can extend this window. Use `make environment-status`
-afterward; newly generated endpoint URLs are also printed by the script.
+```bash
+./scripts/full-environment.sh create --dry-run
+make environment-create
+```
 
-## Interrupted or failed operations
+The interactive confirmation is:
 
-Before the destroy plan begins, an error automatically restores normal deletion
-protections and any public/scheduler state the script froze. Once Terraform has
-started destroying resources, automatic restoration would be unsafe. In that
-case:
+```text
+CREATE rolecall-dev IN proofroom-506314
+```
+
+Creation runs tests and linters, bootstraps APIs/build identity/repository,
+builds all three images with Cloud Build, honors the Firestore reuse delay,
+applies a saved Terraform plan, verifies the `(default)` database is untouched,
+and checks Cloud Run plus the voice plane. It then creates the admin secret
+container, but the plaintext shared credential must still be generated from a
+trusted terminal with `scripts/rotate-admin-credentials.py`.
+
+After a clean recreation, migrate/create rooms and use `make runtime-down` to
+return the voice plane to `SLEEPING`. Allow roughly 30–60 minutes for the full
+create path.
+
+## Interrupted operations
+
+Before destructive apply starts, the script restores scheduler state and
+deletion protections on failure. After Terraform has begun deleting, inspect
+and converge the destroy instead of trying to restore partial resources:
 
 ```bash
 make environment-status
@@ -173,14 +128,8 @@ make environment-status
 make environment-destroy
 ```
 
-Rerunning `destroy` is safe and converges the remaining Terraform resources to
-zero. Do not run `create` until status is `DESTROYED`. Creation is also
-convergent: if it fails after the bootstrap or partial apply, rerun
-`make environment-create` after correcting the reported problem.
+Create is convergent and may be rerun after correcting the reported problem.
 
-Google documents the named-database deletion/reuse behavior and GKE cluster
-deletion semantics here:
-
-- [Manage Firestore databases](https://cloud.google.com/firestore/docs/manage-databases)
-- [Terraform Firestore database resource](https://registry.terraform.io/providers/hashicorp/google/latest/docs/resources/firestore_database)
-- [Delete a GKE cluster](https://cloud.google.com/kubernetes-engine/docs/how-to/deleting-a-cluster)
+References: [manage Firestore databases](https://cloud.google.com/firestore/docs/manage-databases),
+[Terraform Firestore database](https://registry.terraform.io/providers/hashicorp/google/latest/docs/resources/firestore_database),
+and [delete a GKE cluster](https://cloud.google.com/kubernetes-engine/docs/how-to/deleting-a-cluster).

@@ -2,7 +2,10 @@
 
 RoleCallAI is a browser-based, voice-only meeting room led by a configurable Google ADK agent. The deterministic meeting controller owns the clock, lifecycle, turn order, and LiveKit publish permissions; Gemini supplies the facilitator's language and judgment.
 
-The UI provides twelve built-in facilitator roles plus Custom, participant leave controls, admin/delegated end-for-everyone controls, and a remembered microphone check that is requested again only when browser access is unavailable.
+The UI provides twelve built-in facilitator roles plus Custom, participant leave
+controls, admin/delegated end-for-everyone controls, a remembered microphone
+check, shared-admin authentication, document-grounded RAG and automatic voice
+infrastructure sleep/wake.
 
 This repository is the Phase 1 development monorepo. It contains:
 
@@ -41,7 +44,9 @@ Terraform targets the Google Cloud project supplied in the ignored
 database `rolecall-dev`. It does not reference the existing `(default)`
 Firestore database.
 
-Do not run `terraform apply` or deploy images without explicit approval after reviewing the generated plan, resource inventory, and cost estimate. The repository deliberately has no remote, CI/CD pipeline, or production environment.
+Do not run `terraform apply` or deploy images without explicit approval after
+reviewing the generated plan, resource inventory, and cost estimate. This
+development deployment uses manual Cloud Build rather than a CI/CD pipeline.
 
 ## Development deployment
 
@@ -91,9 +96,18 @@ by `environment-create`.
 
 ## Security and privacy defaults
 
-- Capability tokens live in URL fragments and are exchanged for Secure, HttpOnly cookies.
-- Only SHA-256 capability digests are persisted.
+- The admin dashboard requires a versioned Argon2id shared credential,
+  reCAPTCHA risk assessment, throttling, Origin/CSRF checks and an eight-hour
+  Secure, HttpOnly session.
+- Participant capability tokens live in URL fragments and are exchanged for a
+  separate Secure, HttpOnly cookie.
+- Seat verification uses SHA-256 digests; KMS ciphertext permits explicit
+  authenticated dashboard recovery without automatically decrypting room lists.
 - Raw meeting audio is memory-only and LiveKit egress is disabled.
-- Final transcript segments, recaps, and curated meeting memory expire after 90 days.
-- Phase 1 has no document upload or RAG feature.
+- Final transcript segments, documents/chunks, recaps and curated meeting memory
+  expire after 90 days.
+- Document retrieval is a server-scoped ADK tool, filtered to the room and the
+  occurrence's frozen ready versions. Retrieved text is treated as untrusted evidence.
+- After 30 minutes without genuine activity, GKE voice nodes/pods and LiveKit/TURN
+  load balancers scale to zero; only an authenticated admin can wake them.
 - GenAI message-content telemetry is disabled.

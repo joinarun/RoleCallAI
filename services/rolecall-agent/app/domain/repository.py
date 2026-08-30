@@ -5,16 +5,22 @@ from __future__ import annotations
 from collections.abc import Callable
 from copy import deepcopy
 from datetime import datetime
+from math import sqrt
 from threading import RLock
 from typing import Protocol
 
 from app.domain.errors import ConflictError, NotFoundError
 from app.domain.models import (
+    AdminSession,
     CapabilityRecord,
     CapabilitySession,
+    DocumentChunk,
+    DocumentVersion,
     Occurrence,
     OutboxRecord,
     Room,
+    RoomDocument,
+    RuntimeState,
     TranscriptSegment,
 )
 
@@ -22,6 +28,7 @@ from app.domain.models import (
 class Repository(Protocol):
     def create_room(self, room: Room) -> Room: ...
     def get_room(self, room_id: str) -> Room: ...
+    def list_rooms(self, owner_id: str, limit: int = 100) -> list[Room]: ...
     def save_room(self, room: Room) -> Room: ...
     def update_seat_display_name(
         self, room_id: str, slot_id: str, display_name: str, updated_at: datetime
@@ -36,6 +43,36 @@ class Repository(Protocol):
     def revoke_capability_sessions(
         self, room_id: str, slot_id: str | None, before_version: int
     ) -> int: ...
+    def save_admin_session(self, session: AdminSession) -> None: ...
+    def get_admin_session(self, digest: str) -> AdminSession | None: ...
+    def revoke_admin_sessions(self, before_credential_version: int) -> int: ...
+    def count_login_failures(self, key: str, since: datetime) -> int: ...
+    def record_login_failure(
+        self, key: str, occurred_at: datetime, expires_at: datetime
+    ) -> None: ...
+    def clear_login_failures(self, keys: list[str]) -> None: ...
+    def get_runtime_state(self) -> RuntimeState | None: ...
+    def save_runtime_state(self, state: RuntimeState) -> RuntimeState: ...
+    def mutate_runtime_state(
+        self, mutation: Callable[[RuntimeState | None], RuntimeState]
+    ) -> RuntimeState: ...
+    def create_document(self, document: RoomDocument, version: DocumentVersion) -> None: ...
+    def get_document(self, room_id: str, document_id: str) -> RoomDocument: ...
+    def list_documents(self, room_id: str) -> list[RoomDocument]: ...
+    def save_document(self, document: RoomDocument) -> RoomDocument: ...
+    def get_document_version(self, room_id: str, version_id: str) -> DocumentVersion: ...
+    def create_document_version(self, version: DocumentVersion) -> DocumentVersion: ...
+    def save_document_version(self, version: DocumentVersion) -> DocumentVersion: ...
+    def list_document_versions(self, room_id: str, document_id: str) -> list[DocumentVersion]: ...
+    def save_document_chunks(self, chunks: list[DocumentChunk]) -> int: ...
+    def delete_document_chunks(self, room_id: str, version_id: str) -> int: ...
+    def search_document_chunks(
+        self,
+        room_id: str,
+        version_ids: list[str],
+        query_embedding: list[float],
+        limit: int = 5,
+    ) -> list[tuple[DocumentChunk, float]]: ...
     def create_occurrence_if_absent(self, occurrence: Occurrence) -> Occurrence: ...
     def get_occurrence(self, occurrence_id: str) -> Occurrence: ...
     def save_occurrence(self, occurrence: Occurrence) -> Occurrence: ...
@@ -60,6 +97,12 @@ class InMemoryRepository:
         self.rooms: dict[str, Room] = {}
         self.name_index: dict[str, str] = {}
         self.sessions: dict[str, CapabilitySession] = {}
+        self.admin_sessions: dict[str, AdminSession] = {}
+        self.login_failures: dict[str, list[tuple[datetime, datetime]]] = {}
+        self.runtime_state: RuntimeState | None = None
+        self.documents: dict[str, RoomDocument] = {}
+        self.document_versions: dict[str, DocumentVersion] = {}
+        self.document_chunks: dict[str, DocumentChunk] = {}
         self.occurrences: dict[str, Occurrence] = {}
         self.active_by_room: dict[str, str] = {}
         self.transcripts: dict[str, dict[str, TranscriptSegment]] = {}
@@ -79,6 +122,12 @@ class InMemoryRepository:
             if room is None:
                 raise NotFoundError("Room not found")
             return deepcopy(room)
+
+    def list_rooms(self, owner_id: str, limit: int = 100) -> list[Room]:
+        with self._lock:
+            values = [deepcopy(room) for room in self.rooms.values() if room.owner_id == owner_id]
+            values.sort(key=lambda room: room.updated_at, reverse=True)
+            return values[:limit]
 
     def save_room(self, room: Room) -> Room:
         with self._lock:
@@ -184,6 +233,166 @@ class InMemoryRepository:
                     self.sessions[key] = session
                     count += 1
             return count
+
+    def save_admin_session(self, session: AdminSession) -> None:
+        with self._lock:
+            self.admin_sessions[session.session_digest] = deepcopy(session)
+
+    def get_admin_session(self, digest: str) -> AdminSession | None:
+        with self._lock:
+            session = self.admin_sessions.get(digest)
+            return deepcopy(session) if session else None
+
+    def revoke_admin_sessions(self, before_credential_version: int) -> int:
+        with self._lock:
+            count = 0
+            now = datetime.now().astimezone()
+            for digest, session in self.admin_sessions.items():
+                if (
+                    session.credential_version < before_credential_version
+                    and session.revoked_at is None
+                ):
+                    session.revoked_at = now
+                    self.admin_sessions[digest] = session
+                    count += 1
+            return count
+
+    def count_login_failures(self, key: str, since: datetime) -> int:
+        with self._lock:
+            return sum(
+                1
+                for occurred_at, expires_at in self.login_failures.get(key, [])
+                if occurred_at >= since and expires_at > since
+            )
+
+    def record_login_failure(self, key: str, occurred_at: datetime, expires_at: datetime) -> None:
+        with self._lock:
+            current = [item for item in self.login_failures.get(key, []) if item[1] > occurred_at]
+            current.append((occurred_at, expires_at))
+            self.login_failures[key] = current
+
+    def clear_login_failures(self, keys: list[str]) -> None:
+        with self._lock:
+            for key in keys:
+                self.login_failures.pop(key, None)
+
+    def get_runtime_state(self) -> RuntimeState | None:
+        with self._lock:
+            return deepcopy(self.runtime_state)
+
+    def save_runtime_state(self, state: RuntimeState) -> RuntimeState:
+        with self._lock:
+            self.runtime_state = deepcopy(state)
+            return deepcopy(state)
+
+    def mutate_runtime_state(
+        self, mutation: Callable[[RuntimeState | None], RuntimeState]
+    ) -> RuntimeState:
+        with self._lock:
+            self.runtime_state = deepcopy(mutation(deepcopy(self.runtime_state)))
+            return deepcopy(self.runtime_state)
+
+    def create_document(self, document: RoomDocument, version: DocumentVersion) -> None:
+        with self._lock:
+            if document.id in self.documents:
+                raise ConflictError("Document already exists")
+            self.documents[document.id] = deepcopy(document)
+            self.document_versions[version.id] = deepcopy(version)
+
+    def get_document(self, room_id: str, document_id: str) -> RoomDocument:
+        with self._lock:
+            document = self.documents.get(document_id)
+            if document is None or document.room_id != room_id or document.deleted_at is not None:
+                raise NotFoundError("Document not found")
+            return deepcopy(document)
+
+    def list_documents(self, room_id: str) -> list[RoomDocument]:
+        with self._lock:
+            values = [
+                deepcopy(document)
+                for document in self.documents.values()
+                if document.room_id == room_id and document.deleted_at is None
+            ]
+            values.sort(key=lambda document: document.created_at)
+            return values
+
+    def save_document(self, document: RoomDocument) -> RoomDocument:
+        with self._lock:
+            if document.id not in self.documents:
+                raise NotFoundError("Document not found")
+            self.documents[document.id] = deepcopy(document)
+            return deepcopy(document)
+
+    def get_document_version(self, room_id: str, version_id: str) -> DocumentVersion:
+        with self._lock:
+            version = self.document_versions.get(version_id)
+            if version is None or version.room_id != room_id:
+                raise NotFoundError("Document version not found")
+            return deepcopy(version)
+
+    def create_document_version(self, version: DocumentVersion) -> DocumentVersion:
+        with self._lock:
+            if version.id in self.document_versions:
+                raise ConflictError("Document version already exists")
+            self.document_versions[version.id] = deepcopy(version)
+            return deepcopy(version)
+
+    def save_document_version(self, version: DocumentVersion) -> DocumentVersion:
+        with self._lock:
+            if version.id not in self.document_versions:
+                raise NotFoundError("Document version not found")
+            self.document_versions[version.id] = deepcopy(version)
+            return deepcopy(version)
+
+    def list_document_versions(self, room_id: str, document_id: str) -> list[DocumentVersion]:
+        with self._lock:
+            values = [
+                deepcopy(version)
+                for version in self.document_versions.values()
+                if version.room_id == room_id and version.document_id == document_id
+            ]
+            values.sort(key=lambda version: version.version, reverse=True)
+            return values
+
+    def save_document_chunks(self, chunks: list[DocumentChunk]) -> int:
+        with self._lock:
+            for chunk in chunks:
+                self.document_chunks[chunk.id] = deepcopy(chunk)
+            return len(chunks)
+
+    def delete_document_chunks(self, room_id: str, version_id: str) -> int:
+        with self._lock:
+            keys = [
+                key
+                for key, chunk in self.document_chunks.items()
+                if chunk.room_id == room_id and chunk.version_id == version_id
+            ]
+            for key in keys:
+                self.document_chunks.pop(key, None)
+            return len(keys)
+
+    def search_document_chunks(
+        self,
+        room_id: str,
+        version_ids: list[str],
+        query_embedding: list[float],
+        limit: int = 5,
+    ) -> list[tuple[DocumentChunk, float]]:
+        with self._lock:
+            allowed = set(version_ids)
+            query_norm = sqrt(sum(value * value for value in query_embedding)) or 1.0
+            matches: list[tuple[DocumentChunk, float]] = []
+            for chunk in self.document_chunks.values():
+                if chunk.room_id != room_id or chunk.version_id not in allowed:
+                    continue
+                chunk_norm = sqrt(sum(value * value for value in chunk.embedding)) or 1.0
+                similarity = sum(
+                    left * right
+                    for left, right in zip(query_embedding, chunk.embedding, strict=False)
+                ) / (query_norm * chunk_norm)
+                matches.append((deepcopy(chunk), 1.0 - similarity))
+            matches.sort(key=lambda item: item[1])
+            return matches[:limit]
 
     def create_occurrence_if_absent(self, occurrence: Occurrence) -> Occurrence:
         with self._lock:

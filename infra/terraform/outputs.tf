@@ -1,5 +1,5 @@
-output "approval_gate" {
-  value = "STOP: review rolecall-dev.tfplan, resource-inventory.txt, and COST_ESTIMATE.md before terraform apply or image deployment."
+output "rollout_note" {
+  value = "Secure admin/RAG/runtime-sleep rollout is managed by scripts/deploy-secure-rag.sh; save the one-time credential output."
 }
 
 output "control_plane_url" {
@@ -35,6 +35,25 @@ output "artifact_repository" {
 
 output "agent_engine_memory_bank" {
   value = google_vertex_ai_reasoning_engine.memory.name
+}
+
+output "documents_bucket" {
+  value = google_storage_bucket.documents.name
+}
+
+output "recaptcha_site_key" {
+  value = google_recaptcha_enterprise_key.admin_login.name
+}
+
+output "seat_link_kms_key" {
+  value = google_kms_crypto_key.seat_links.id
+}
+
+output "runtime_jobs" {
+  value = {
+    wake    = google_cloud_run_v2_job.runtime["wake"].name
+    suspend = google_cloud_run_v2_job.runtime["suspend"].name
+  }
 }
 
 output "gke_cluster" {

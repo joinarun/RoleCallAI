@@ -3,6 +3,7 @@ import { access } from "node:fs/promises";
 import { chromium, request } from "@playwright/test";
 
 const baseURL = process.env.ROLECALL_SMOKE_BASE_URL?.replace(/\/$/, "");
+const storageStatePath = process.env.ROLECALL_SMOKE_ADMIN_STORAGE_STATE;
 const firstAudio = process.env.ROLECALL_SMOKE_AUDIO_ONE;
 const secondAudio = process.env.ROLECALL_SMOKE_AUDIO_TWO;
 const smokeRole = process.env.ROLECALL_SMOKE_ROLE ?? "SCRUM_MASTER";
@@ -13,12 +14,12 @@ const smokeInstructions =
     ? "Run exactly one concise rapid-fire trivia round. Ask Ben Smoke first and Ada Smoke second, one question each. After both responses, do not open another round. Speak a closing recap with four short, complete numbered sentences, then call finish_meeting as the final action."
     : "Run exactly one concise stand-up round and ask each participant once. After both responses, do not open another round. Speak a closing recap with four short, complete numbered sentences, then call finish_meeting as the final action.");
 
-if (!baseURL || !firstAudio || !secondAudio) {
+if (!baseURL || !firstAudio || !secondAudio || !storageStatePath) {
   throw new Error(
-    "Set ROLECALL_SMOKE_BASE_URL, ROLECALL_SMOKE_AUDIO_ONE, and ROLECALL_SMOKE_AUDIO_TWO.",
+    "Set ROLECALL_SMOKE_BASE_URL, ROLECALL_SMOKE_ADMIN_STORAGE_STATE, ROLECALL_SMOKE_AUDIO_ONE, and ROLECALL_SMOKE_AUDIO_TWO.",
   );
 }
-await Promise.all([access(firstAudio), access(secondAudio)]);
+await Promise.all([access(firstAudio), access(secondAudio), access(storageStatePath)]);
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
@@ -53,22 +54,6 @@ async function launchParticipant(audioPath) {
   return { browser, context, page: await context.newPage() };
 }
 
-async function seedAndVerifyDashboard(page, created) {
-  await page.goto("/");
-  await page.evaluate((room) => {
-    sessionStorage.setItem(`rolecall-links:${room.room.id}`, JSON.stringify(room));
-  }, created);
-  await page.reload();
-  await page.getByRole("heading", { name: /rooms, people and outcomes/i }).waitFor({
-    timeout: 20_000,
-  });
-  await page.getByRole("heading", { name: created.room.name, exact: true }).waitFor();
-  if ((await page.locator(".dashboard-seat").count()) !== created.room.expectedParticipants) {
-    throw new Error("Home workspace did not render every persistent participant seat");
-  }
-  await page.getByRole("link", { name: /manage room/i }).waitFor();
-}
-
 async function joinParticipant(page, seatUrl, roomId, roomName, name, runDeviceCheck = true) {
   await page.goto(seatUrl);
   await page.getByRole("heading", { name: /sound good/i }).waitFor({ timeout: 20_000 });
@@ -95,8 +80,12 @@ async function joinParticipant(page, seatUrl, roomId, roomName, name, runDeviceC
   return payload;
 }
 
-const publicApi = await request.newContext({ baseURL });
-const adminApi = await request.newContext({ baseURL });
+const adminApi = await request.newContext({ baseURL, storageState: storageStatePath });
+const adminSession = await jsonResponse(
+  await adminApi.get("/v1/auth/session"),
+  "read admin session",
+);
+const mutationHeaders = { Origin: baseURL, "X-CSRF-Token": adminSession.csrfToken };
 let firstParticipant;
 let secondParticipant;
 let roomId;
@@ -104,14 +93,20 @@ let roomDeleted = false;
 
 async function currentOccurrence() {
   if (!roomId) return null;
-  const response = await adminApi.get(`/v1/rooms/${roomId}/current-occurrence`);
-  return jsonResponse(response, "read current occurrence");
+  const dashboard = await jsonResponse(
+    await adminApi.get("/v1/admin/rooms"),
+    "read admin dashboard",
+  );
+  return dashboard.rooms.find((item) => item.room.id === roomId)?.currentOccurrence ?? null;
 }
 
 async function finishActiveOccurrence() {
   const current = await currentOccurrence().catch(() => null);
   if (!current || !["LOBBY", "STARTING", "RUNNING", "ENDING"].includes(current.status)) return;
-  await adminApi.post(`/v1/occurrences/${current.id}:end`).catch(() => undefined);
+  await adminApi.post(`/v1/admin/occurrences/${current.id}:end`, {
+    headers: mutationHeaders,
+    data: { reason: "voice_smoke_cleanup" },
+  }).catch(() => undefined);
 }
 
 async function waitForIdle() {
@@ -125,7 +120,8 @@ async function waitForIdle() {
 
 try {
   const created = await jsonResponse(
-    await publicApi.post("/v1/rooms", {
+    await adminApi.post("/v1/admin/rooms", {
+      headers: mutationHeaders,
       data: {
         name: `Deployed ${smokeRole.toLowerCase()} voice smoke ${Date.now()}`,
         expectedParticipants: 2,
@@ -140,20 +136,11 @@ try {
   );
   roomId = created.room.id;
 
-  const adminUrl = new URL(created.adminUrl);
-  const adminToken = new URLSearchParams(adminUrl.hash.slice(1)).get("cap");
-  if (!adminToken) throw new Error("Admin capability was not returned");
-  await jsonResponse(
-    await adminApi.post("/v1/capability-sessions", {
-      data: { roomId, token: adminToken },
-    }),
-    "exchange admin capability",
-  );
-
   const firstSlot = created.seatUrls[0].slotId;
   const secondSlot = created.seatUrls[1].slotId;
   await jsonResponse(
-    await adminApi.put(`/v1/rooms/${roomId}/slots/${secondSlot}:end-meeting-permission`, {
+    await adminApi.put(`/v1/admin/rooms/${roomId}/slots/${secondSlot}:end-meeting-permission`, {
+      headers: mutationHeaders,
       data: { allowed: true },
     }),
     "delegate participant end permission",
@@ -161,7 +148,6 @@ try {
 
   firstParticipant = await launchParticipant(firstAudio);
   secondParticipant = await launchParticipant(secondAudio);
-  await seedAndVerifyDashboard(firstParticipant.page, created);
   const firstJoin = await joinParticipant(
     firstParticipant.page,
     created.seatUrls[0].url,
@@ -184,7 +170,7 @@ try {
   let lastProgressAt = 0;
 
   const voiceEvidence = await waitUntil("two-participant voice handoff", async () => {
-    const response = await adminApi.get(`/v1/occurrences/${firstOccurrenceId}/transcript`);
+    const response = await adminApi.get(`/v1/admin/occurrences/${firstOccurrenceId}/transcript`);
     const transcript = await jsonResponse(response, "read smoke transcript");
     const firstSegments = transcript.filter(
       (segment) => segment.speakerType === "SEAT" && segment.speakerId === firstSlot,
@@ -236,7 +222,7 @@ try {
   });
 
   const closingCaption = await waitUntil("complete natural closing recap", async () => {
-    const response = await adminApi.get(`/v1/occurrences/${firstOccurrenceId}/transcript`);
+    const response = await adminApi.get(`/v1/admin/occurrences/${firstOccurrenceId}/transcript`);
     const transcript = await jsonResponse(response, "read natural closing transcript");
     const lastHumanSequence = Math.max(
       ...transcript
@@ -267,10 +253,7 @@ try {
     await firstParticipant.page.getByText(label, { exact: true }).waitFor();
   }
   await firstParticipant.page.getByRole("link", { name: /return to home workspace/i }).click();
-  await firstParticipant.page.getByRole("heading", { name: /rooms, people and outcomes/i }).waitFor();
-  await waitUntil("home workspace meeting history", async () => {
-    return (await firstParticipant.page.locator(".workspace-history-row").count()) === 1;
-  }, 30_000, 1_000);
+  await firstParticipant.page.getByRole("heading", { name: /let ai lead the conversation forward/i }).waitFor();
 
   const leaveJoin = await joinParticipant(
     firstParticipant.page,
@@ -286,8 +269,8 @@ try {
     .getByRole("heading", { name: /meeting can continue without you/i })
     .waitFor({ timeout: 15_000 });
   await waitUntil("participant leave propagation", async () => {
-    const response = await adminApi.get(`/v1/occurrences/${leaveJoin.occurrence.id}/state`);
-    const occurrence = await jsonResponse(response, "read leave occurrence");
+    const occurrence = await currentOccurrence();
+    if (occurrence?.id !== leaveJoin.occurrence.id) return false;
     const attendance = occurrence?.attendance?.[firstSlot];
     return attendance?.connected === false && Boolean(attendance.leftAt);
   }, 30_000, 1_000);
@@ -317,12 +300,18 @@ try {
     false,
   );
   await jsonResponse(
-    await adminApi.post(`/v1/occurrences/${adminEndJoin.occurrence.id}:end`),
+    await adminApi.post(`/v1/admin/occurrences/${adminEndJoin.occurrence.id}:end`, {
+      headers: mutationHeaders,
+      data: { reason: "voice_smoke_admin_end" },
+    }),
     "admin end meeting",
   );
   await waitForIdle();
 
-  await jsonResponse(await adminApi.delete(`/v1/rooms/${roomId}`), "delete smoke room");
+  await jsonResponse(
+    await adminApi.delete(`/v1/admin/rooms/${roomId}`, { headers: mutationHeaders }),
+    "delete smoke room",
+  );
   roomDeleted = true;
   console.log(
     JSON.stringify({
@@ -333,7 +322,7 @@ try {
       participantLeave: true,
       delegatedParticipantEnd: true,
       rememberedMicrophone: true,
-      homeWorkspace: true,
+      securedHomeBoundary: true,
       completionMetadata: true,
       adminEnd: true,
       cleanup: "smoke room deleted",
@@ -343,7 +332,7 @@ try {
   if (!roomDeleted && roomId) {
     await finishActiveOccurrence().catch(() => undefined);
     await waitForIdle().catch(() => undefined);
-    await adminApi.delete(`/v1/rooms/${roomId}`).catch(() => undefined);
+    await adminApi.delete(`/v1/admin/rooms/${roomId}`, { headers: mutationHeaders }).catch(() => undefined);
   }
   await Promise.allSettled([
     firstParticipant?.context.close(),
@@ -352,7 +341,6 @@ try {
   await Promise.allSettled([
     firstParticipant?.browser.close(),
     secondParticipant?.browser.close(),
-    publicApi.dispose(),
     adminApi.dispose(),
   ]);
 }

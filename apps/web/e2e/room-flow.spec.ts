@@ -1,11 +1,11 @@
 import { expect, test } from "@playwright/test";
 
-import { createRoom, newVoiceContext, prepareSeat } from "./helpers";
+import { createRoom, loginPage, newVoiceContext, prepareSeat } from "./helpers";
 
-test("admin creates a private room and opens its management view", async ({ page }, testInfo) => {
+test("admin logs in, creates a private room, and manages it in the dashboard", async ({ page }, testInfo) => {
   const name = `Friday Studio ${testInfo.project.name} ${Date.now()}`;
-  await page.goto("/");
-  await expect(page.getByRole("heading", { name: /let ai lead the conversation forward/i })).toBeVisible();
+  await loginPage(page);
+  await page.getByRole("button", { name: /create room/i }).click();
 
   await page.getByLabel("Room name").fill(name);
   await page.getByLabel("Participants").selectOption("2");
@@ -20,34 +20,27 @@ test("admin creates a private room and opens its management view", async ({ page
 
   await expect(page.getByText("Room ready")).toBeVisible();
   await expect(page.getByRole("heading", { name })).toBeVisible();
-  await expect(page.getByText("One-time link vault")).toBeVisible();
-  await expect(page.getByText("PARTICIPANT SEAT")).toHaveCount(2);
+  await expect(page.getByText("Participant links")).toBeVisible();
+  await expect(page.locator(".seat-link")).toHaveCount(2);
+  await page.getByRole("button", { name: /return to dashboard/i }).click();
 
-  await page.getByRole("button", { name: /open admin room/i }).click();
-  await expect(page).toHaveURL((url) => url.pathname.startsWith("/manage/") && url.hash === "");
-  await expect(page.getByRole("heading", { name })).toBeVisible();
-  await expect(page.getByText("Room is idle")).toBeVisible();
-  await expect(page.getByText("2 invitations")).toBeVisible();
-  await page.getByRole("button", { name: /settings/i }).click();
-  await page.getByLabel("Agent name").fill("Pixel Prime");
-  await page.getByLabel("Participants").selectOption("3");
-  await page.getByRole("button", { name: /save settings/i }).click();
-  await expect(page.getByRole("status")).toContainText(/newly created seat links/i);
-  await page.getByRole("button", { name: /overview/i }).click();
-  await expect(page.getByText("3 invitations")).toBeVisible();
-  await page.getByRole("button", { name: /delegate end/i }).first().click();
-  await expect(page.getByRole("status")).toContainText(/can now end a meeting/i);
-  await expect(page.getByRole("button", { name: /can end/i }).first()).toHaveAttribute("aria-pressed", "true");
-  await page.getByRole("button", { name: /history/i }).click();
-  await expect(page.getByRole("heading", { name: /meetings and outcomes/i })).toBeVisible();
+  const card = page.locator(".dashboard-room-card").filter({ has: page.getByRole("heading", { name, exact: true }) });
+  await expect(card).toContainText("Pixel · Fun Friday");
+  await card.getByRole("button", { name: /manage room/i }).click();
+  await expect(card.getByText("Participants and links")).toBeVisible();
+  await expect(card.locator(".dashboard-seat")).toHaveCount(2);
+  await card.getByLabel("Agent name").fill("Pixel Prime");
+  await card.getByLabel("Seats").fill("3");
+  await card.getByRole("button", { name: /save settings/i }).click();
+  await expect(card).toContainText("Pixel Prime · Fun Friday");
 
-  await page.getByRole("link", { name: /rolecallai home/i }).click();
-  await expect(page.getByRole("heading", { name: /rooms, people and outcomes/i })).toBeVisible();
-  await expect(page.getByRole("heading", { name, exact: true })).toBeVisible();
-  await expect(page.getByText("Pixel Prime · Fun Friday")).toBeVisible();
-  await expect(page.locator(".dashboard-seat")).toHaveCount(3);
-  await expect(page.getByRole("link", { name: /manage room/i })).toBeVisible();
-  await expect(page.getByRole("button", { name: /copy admin link/i })).toBeVisible();
+  await card.getByRole("button", { name: /close controls/i }).click();
+  await card.getByRole("button", { name: /manage room/i }).click();
+  await expect(card.locator(".dashboard-seat")).toHaveCount(3);
+  await card.locator(".permission-toggle input").first().click();
+  await expect(card.locator(".permission-toggle input").first()).toBeChecked();
+  await expect(card.getByText("Meeting documents")).toBeVisible();
+  await expect(page.getByRole("heading", { name: /recent conversations/i })).toBeVisible();
 });
 
 test("seat fragment is removed, synthetic microphone works, and duplicate seat is rejected", async ({

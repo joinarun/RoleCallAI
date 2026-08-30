@@ -14,6 +14,11 @@
 
 FROM python:3.12-slim
 
+RUN apt-get update \
+    && apt-get install --no-install-recommends -y clamav ca-certificates \
+    && freshclam \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN pip install --no-cache-dir uv==0.8.13
 
 WORKDIR /code

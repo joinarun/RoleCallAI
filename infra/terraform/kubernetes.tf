@@ -138,6 +138,10 @@ resource "helm_release" "platform" {
     name  = "secrets.livekitApiSecret"
     value = random_password.livekit_api_secret.result
   }
+  set_sensitive {
+    name  = "secrets.redisPassword"
+    value = random_password.redis_password.result
+  }
 
   depends_on = [
     helm_release.cert_manager,
@@ -180,7 +184,7 @@ resource "helm_release" "livekit" {
         use_external_ip  = true
       }
       redis = {
-        address = "${google_redis_instance.rolecall.host}:${google_redis_instance.rolecall.port}"
+        address = "rolecall-redis.rolecall.svc.cluster.local:6379"
       }
       turn = {
         enabled     = true
@@ -257,11 +261,14 @@ resource "helm_release" "livekit" {
     name  = "livekit.webhook.api_key"
     value = random_id.livekit_api_key.hex
   }
+  set_sensitive {
+    name  = "livekit.redis.password"
+    value = random_password.redis_password.result
+  }
 
   depends_on = [
     helm_release.platform,
     google_cloud_run_v2_service.control,
-    google_redis_instance.rolecall,
     google_container_node_pool.media,
   ]
 }

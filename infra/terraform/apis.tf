@@ -8,6 +8,7 @@ locals {
     "cloudtrace.googleapis.com",
     "compute.googleapis.com",
     "container.googleapis.com",
+    "cloudkms.googleapis.com",
     "firestore.googleapis.com",
     "iam.googleapis.com",
     "iamcredentials.googleapis.com",
@@ -15,10 +16,9 @@ locals {
     "monitoring.googleapis.com",
     "networkconnectivity.googleapis.com",
     "pubsub.googleapis.com",
-    "redis.googleapis.com",
+    "recaptchaenterprise.googleapis.com",
     "run.googleapis.com",
     "secretmanager.googleapis.com",
-    "servicenetworking.googleapis.com",
     "serviceusage.googleapis.com",
     # Cloud Build stages manual source submissions in a build-only GCS bucket.
     "storage.googleapis.com",
@@ -37,6 +37,14 @@ resource "google_project_service_identity" "pubsub" {
   provider = google-beta
   project  = var.project_id
   service  = "pubsub.googleapis.com"
+
+  depends_on = [google_project_service.required]
+}
+
+resource "google_project_service_identity" "firestore" {
+  provider = google-beta
+  project  = var.project_id
+  service  = "firestore.googleapis.com"
 
   depends_on = [google_project_service.required]
 }

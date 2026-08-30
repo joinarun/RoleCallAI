@@ -2,7 +2,7 @@ import { FormEvent, lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
 import { Check, Headphones, LoaderCircle, LockKeyhole, Mic2, ShieldCheck, Volume2 } from "lucide-react";
 import { CapabilityBoundary } from "../components/CapabilityBoundary";
-import { api, jsonBody } from "../lib/api";
+import { ApiError, api, jsonBody } from "../lib/api";
 import type { JoinResponse, Room } from "../types";
 
 const CONSENT_VERSION = "2026-08-phase1";
@@ -131,7 +131,9 @@ function JoinContent({ roomId, slotId }: { roomId: string; slotId: string }) {
       sessionStorage.setItem(`rolecall-occurrence:${roomId}`, result.occurrence.id);
       setJoin(result);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not join the meeting.");
+      setError(reason instanceof ApiError && reason.code === "runtime_asleep"
+        ? "Voice services are sleeping. Ask the administrator to wake them, then try again in 10–20 minutes."
+        : reason instanceof Error ? reason.message : "Could not join the meeting.");
     } finally {
       setJoining(false);
     }

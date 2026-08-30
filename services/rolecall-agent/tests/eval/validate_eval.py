@@ -42,6 +42,9 @@ REQUIRED_CASE_PATTERNS = {
     "timing": r"timing",
     "floor": r"floor",
     "isolation": r"isolation",
+    "document grounding": r"document_grounded",
+    "document no-match": r"document_no_match",
+    "document prompt injection": r"document_prompt_injection",
 }
 
 

@@ -17,10 +17,12 @@ from app.domain.models import (
     RoomUpdatedResponse,
     RoomView,
     Seat,
+    SeatLinkView,
 )
 from app.domain.normalization import clean_display_text, normalize_room_name
 from app.domain.repository import Repository
 from app.security.capabilities import CapabilityService
+from app.security.seat_links import SeatLinkCipher
 
 
 def new_id(prefix: str) -> str:
@@ -29,24 +31,36 @@ def new_id(prefix: str) -> str:
 
 class RoomService:
     def __init__(
-        self, repository: Repository, capabilities: CapabilityService, settings: Settings
+        self,
+        repository: Repository,
+        capabilities: CapabilityService,
+        seat_links: SeatLinkCipher,
+        settings: Settings,
     ) -> None:
         self.repository = repository
         self.capabilities = capabilities
+        self.seat_links = seat_links
         self.settings = settings
 
     def create(self, request: RoomCreate) -> RoomCreatedResponse:
-        admin_secret, admin_digest = self.capabilities.issue_secret()
+        room_id = new_id("room")
         seats: list[Seat] = []
         seat_secrets: list[tuple[str, str]] = []
         for ordinal in range(1, request.expected_participants + 1):
             secret, digest = self.capabilities.issue_secret()
             slot_id = new_id("slot")
-            seats.append(Seat(id=slot_id, ordinal=ordinal, capability_digest=digest))
+            seats.append(
+                Seat(
+                    id=slot_id,
+                    ordinal=ordinal,
+                    capability_digest=digest,
+                    capability_ciphertext=self.seat_links.encrypt(secret, room_id, slot_id, 1),
+                )
+            )
             seat_secrets.append((slot_id, secret))
 
         room = Room(
-            id=new_id("room"),
+            id=room_id,
             name=request.name,
             normalized_name=normalize_room_name(request.name),
             expected_participants=request.expected_participants,
@@ -55,13 +69,13 @@ class RoomService:
             agent_name=request.agent_name,
             instructions=request.instructions.strip(),
             game=request.game,
-            admin_capability_digest=admin_digest,
+            owner_id=self.settings.admin_owner_id,
+            security_migration_version=1,
             slots=seats,
         )
         room = self.repository.create_room(room)
         return RoomCreatedResponse(
             room=RoomView.from_room(room),
-            admin_url=self._capability_url("manage", room.id, admin_secret),
             seat_urls=[
                 {"slotId": slot_id, "url": self._capability_url("join", room.id, secret)}
                 for slot_id, secret in seat_secrets
@@ -100,7 +114,13 @@ class RoomService:
             else:
                 for ordinal in range(len(room.slots) + 1, target + 1):
                     secret, digest = self.capabilities.issue_secret()
-                    slot = Seat(id=new_id("slot"), ordinal=ordinal, capability_digest=digest)
+                    slot_id = new_id("slot")
+                    slot = Seat(
+                        id=slot_id,
+                        ordinal=ordinal,
+                        capability_digest=digest,
+                        capability_ciphertext=self.seat_links.encrypt(secret, room.id, slot_id, 1),
+                    )
                     room.slots.append(slot)
                     new_seat_urls.append(
                         {"slotId": slot.id, "url": self._capability_url("join", room.id, secret)}
@@ -128,10 +148,36 @@ class RoomService:
         secret, digest = self.capabilities.issue_secret()
         slot.capability_digest = digest
         slot.capability_version += 1
+        slot.capability_ciphertext = self.seat_links.encrypt(
+            secret, room.id, slot.id, slot.capability_version
+        )
         room.updated_at = datetime.now(UTC)
         self.repository.save_room(room)
         self.repository.revoke_capability_sessions(room.id, slot.id, slot.capability_version)
         return self._capability_url("join", room.id, secret)
+
+    def seat_link_views(self, room_id: str) -> list[SeatLinkView]:
+        room = self.repository.get_room(room_id)
+        links: list[SeatLinkView] = []
+        for slot in sorted(room.slots, key=lambda item: item.ordinal):
+            if not slot.capability_ciphertext:
+                raise ConflictError("Participant links must be rotated before recovery")
+            secret = self.seat_links.decrypt(
+                slot.capability_ciphertext,
+                room.id,
+                slot.id,
+                slot.capability_version,
+            )
+            links.append(
+                SeatLinkView(
+                    slot_id=slot.id,
+                    ordinal=slot.ordinal,
+                    url=self._capability_url("join", room.id, secret),
+                    last_display_name=slot.last_display_name,
+                    can_end_meeting=slot.can_end_meeting,
+                )
+            )
+        return links
 
     def set_end_meeting_permission(self, room_id: str, slot_id: str, allowed: bool) -> RoomView:
         """Delegate or revoke the narrow ability to end a meeting for everyone."""

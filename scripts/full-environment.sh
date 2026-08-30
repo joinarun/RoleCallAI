@@ -27,11 +27,11 @@ readonly FULL_DEFAULT_DATABASE="(default)"
 readonly FULL_DEFAULT_DATABASE_LOCATION="${ROLECALL_DEFAULT_FIRESTORE_LOCATION:-your-existing-default-database-location}"
 readonly FULL_CONTROL_SERVICE="${ROLECALL_CONTROL_SERVICE:-${FULL_CLUSTER}-control}"
 readonly FULL_JOBS_SERVICE="${FULL_CLUSTER}-jobs"
-readonly FULL_REDIS_INSTANCE="${FULL_CLUSTER}"
 readonly FULL_ARTIFACT_REPOSITORY="${FULL_CLUSTER}"
 readonly FULL_NETWORK="${FULL_CLUSTER}"
 readonly FULL_DRAIN_JOB="${FULL_CLUSTER}-drain-outbox"
 readonly FULL_CLEANUP_JOB="${FULL_CLUSTER}-retention-cleanup"
+readonly FULL_IDLE_JOB="${FULL_CLUSTER}-runtime-idle-check"
 readonly FULL_BUILD_SERVICE_ACCOUNT_EMAIL="${ROLECALL_BUILD_SERVICE_ACCOUNT_EMAIL:-rolecall-build-dev@${FULL_PROJECT_ID}.iam.gserviceaccount.com}"
 readonly FULL_BUILD_SERVICE_ACCOUNT="projects/${FULL_PROJECT_ID}/serviceAccounts/${FULL_BUILD_SERVICE_ACCOUNT_EMAIL}"
 readonly FULL_KUBE_CONTEXT="gke_${FULL_PROJECT_ID}_${FULL_ZONE}_${FULL_CLUSTER}"
@@ -47,6 +47,7 @@ FULL_FROZEN=false
 FULL_INITIAL_CONTROL_PUBLIC=false
 FULL_INITIAL_DRAIN_STATE="MISSING"
 FULL_INITIAL_CLEANUP_STATE="MISSING"
+FULL_INITIAL_IDLE_STATE="MISSING"
 FULL_LAST_STEP="startup"
 FULL_LOCK_ACQUIRED=false
 
@@ -58,7 +59,7 @@ Commands:
   status    Read-only report of Terraform and major RoleCallAI resources.
   destroy   PERMANENTLY delete every Terraform-managed RoleCallAI resource,
             including the named Firestore database, rooms, transcripts,
-            Memory Bank, Redis, images, secrets, GKE, and public endpoints.
+            Memory Bank, documents, images, secrets, KMS, GKE, and public endpoints.
   create    Rebuild images and recreate the complete environment from Terraform.
 
 Options:
@@ -158,13 +159,6 @@ full_cluster_exists() {
   gcloud container clusters describe "${FULL_CLUSTER}" \
     --project="${FULL_PROJECT_ID}" \
     --zone="${FULL_ZONE}" \
-    --format='value(name)' >/dev/null 2>&1
-}
-
-full_redis_exists() {
-  gcloud redis instances describe "${FULL_REDIS_INSTANCE}" \
-    --project="${FULL_PROJECT_ID}" \
-    --region="${FULL_REGION}" \
     --format='value(name)' >/dev/null 2>&1
 }
 
@@ -290,6 +284,7 @@ full_freeze() {
   fi
   FULL_INITIAL_DRAIN_STATE="$(full_scheduler_state "${FULL_DRAIN_JOB}")"
   FULL_INITIAL_CLEANUP_STATE="$(full_scheduler_state "${FULL_CLEANUP_JOB}")"
+  FULL_INITIAL_IDLE_STATE="$(full_scheduler_state "${FULL_IDLE_JOB}")"
 
   full_log "Freezing new public traffic and scheduled jobs; GKE remains available for clean Helm removal."
   if full_control_exists && full_control_is_public; then
@@ -307,6 +302,10 @@ full_freeze() {
   fi
   if [[ "${FULL_INITIAL_CLEANUP_STATE}" == "ENABLED" ]]; then
     full_run_mutation gcloud scheduler jobs pause "${FULL_CLEANUP_JOB}" \
+      --project="${FULL_PROJECT_ID}" --location="${FULL_REGION}" --quiet
+  fi
+  if [[ "${FULL_INITIAL_IDLE_STATE}" == "ENABLED" ]]; then
+    full_run_mutation gcloud scheduler jobs pause "${FULL_IDLE_JOB}" \
       --project="${FULL_PROJECT_ID}" --location="${FULL_REGION}" --quiet
   fi
 
@@ -335,6 +334,10 @@ full_unfreeze() {
     gcloud scheduler jobs resume "${FULL_CLEANUP_JOB}" \
       --project="${FULL_PROJECT_ID}" --location="${FULL_REGION}" --quiet || true
   fi
+  if [[ "${FULL_INITIAL_IDLE_STATE}" == "ENABLED" && "$(full_scheduler_state "${FULL_IDLE_JOB}")" == "PAUSED" ]]; then
+    gcloud scheduler jobs resume "${FULL_IDLE_JOB}" \
+      --project="${FULL_PROJECT_ID}" --location="${FULL_REGION}" --quiet || true
+  fi
   FULL_FROZEN=false
 }
 
@@ -345,6 +348,15 @@ full_protection_targets() {
   if full_state_has 'google_container_cluster.rolecall'; then
     printf '%s\n' '-target=google_container_cluster.rolecall'
   fi
+  if full_state_has 'google_kms_crypto_key.seat_links'; then
+    printf '%s\n' '-target=google_kms_crypto_key.seat_links'
+  fi
+  if full_state_has 'google_secret_manager_secret.admin_credentials'; then
+    printf '%s\n' '-target=google_secret_manager_secret.admin_credentials'
+  fi
+  if full_state_has 'google_storage_bucket.documents'; then
+    printf '%s\n' '-target=google_storage_bucket.documents'
+  fi
 }
 
 full_lower_protections() {
@@ -353,7 +365,7 @@ full_lower_protections() {
     [[ -n "${full_target}" ]] && full_targets+=("${full_target}")
   done < <(full_protection_targets)
   if [[ "${#full_targets[@]}" -eq 0 ]]; then
-    full_log "Firestore and GKE protection resources are already absent from Terraform state."
+    full_log "Protected Firestore, GKE, KMS, admin-secret, and document-bucket resources are absent."
     return
   fi
 
@@ -365,7 +377,7 @@ full_lower_protections() {
   fi
 
   FULL_PROTECTIONS_LOWERED=true
-  full_log "Temporarily disabling named-Firestore and GKE deletion protection."
+  full_log "Temporarily disabling RoleCallAI deletion protections."
   full_tf apply -input=false -auto-approve -var-file="${FULL_TF_VARS}" "${full_targets[@]}"
 }
 
@@ -376,7 +388,7 @@ full_restore_protections() {
   done < <(full_protection_targets)
   full_remove_override
   if [[ "${#full_targets[@]}" -gt 0 ]]; then
-    full_log "Re-enabling normal Firestore and GKE deletion protection."
+    full_log "Re-enabling normal RoleCallAI deletion protection."
     full_tf apply -input=false -auto-approve -var-file="${FULL_TF_VARS}" \
       "${full_targets[@]}" >/dev/null || \
       printf '[rolecall-full] WARNING: automatic protection restoration failed; run terraform apply before other operations.\n' >&2
@@ -395,7 +407,7 @@ full_destroy() {
 
   cat <<EOF
 WARNING: this permanently deletes the RoleCallAI named Firestore database and
-all rooms, links, transcripts, recaps, memory, Redis data, images, secrets,
+all rooms, links, transcripts, recaps, memory, documents, images, secrets,
 GKE/LiveKit, Cloud Run services, networking, and public endpoints.
 
 The unrelated ${FULL_DEFAULT_DATABASE} Firestore database in
@@ -497,7 +509,8 @@ full_environment_complete() {
   full_state_has 'google_container_cluster.rolecall' && \
     full_state_has 'google_cloud_run_v2_service.control' && \
     full_state_has 'google_firestore_database.rolecall' && \
-    full_state_has 'google_redis_instance.rolecall'
+    full_state_has 'google_storage_bucket.documents' && \
+    full_state_has 'google_kms_crypto_key.seat_links'
 }
 
 full_kube() {
@@ -543,7 +556,7 @@ full_verify_create() {
 full_create() {
   local full_targets=() full_target full_tag full_timestamp full_plan
   if full_environment_complete && full_firestore_exists && full_cluster_exists \
-    && full_control_exists && full_redis_exists && [[ "${FULL_DRY_RUN}" == false ]]; then
+    && full_control_exists && [[ "${FULL_DRY_RUN}" == false ]]; then
     full_log "The full environment is already represented in Terraform state."
     full_log "Use scripts/dev-runtime.sh up for a suspended environment."
     full_status
@@ -552,7 +565,8 @@ full_create() {
 
   cat <<EOF
 This recreates billable RoleCallAI infrastructure in ${FULL_PROJECT_ID}, including
-three minimum GKE nodes, Redis, load balancers, Cloud Run, Firestore, and Vertex AI.
+three minimum GKE nodes, ephemeral in-cluster Redis, load balancers, Cloud Run,
+Firestore, private document storage, KMS, reCAPTCHA Enterprise, and Vertex AI.
 New secrets, capabilities, Memory Bank ID, reserved IPs, and sslip.io hostnames are
 created. Data and links from a previous destroyed environment do not return.
 EOF
@@ -613,7 +627,7 @@ EOF
 
 full_status() {
   local full_count full_mode="PARTIAL" full_named_db="absent" full_cluster="absent"
-  local full_control="absent" full_jobs="absent" full_redis="absent" full_artifact="absent"
+  local full_control="absent" full_jobs="absent" full_documents="absent" full_artifact="absent"
   local full_default_location
   full_count="$(full_state_count)"
   full_default_location="$(full_default_firestore_location 2>/dev/null || printf 'missing')"
@@ -622,13 +636,14 @@ full_status() {
   full_control_exists && full_control="present"
   gcloud run services describe "${FULL_JOBS_SERVICE}" --project="${FULL_PROJECT_ID}" \
     --region="${FULL_REGION}" --format='value(metadata.name)' >/dev/null 2>&1 && full_jobs="present"
-  full_redis_exists && full_redis="present"
+  gcloud storage buckets describe "gs://${FULL_PROJECT_ID}-${FULL_CLUSTER}-documents" \
+    --project="${FULL_PROJECT_ID}" >/dev/null 2>&1 && full_documents="present"
   gcloud artifacts repositories describe "${FULL_ARTIFACT_REPOSITORY}" \
     --project="${FULL_PROJECT_ID}" --location="${FULL_REGION}" \
     --format='value(name)' >/dev/null 2>&1 && full_artifact="present"
 
   if [[ "${full_count}" == "0" && "${full_named_db}" == "absent" && "${full_cluster}" == "absent" \
-    && "${full_control}" == "absent" && "${full_redis}" == "absent" ]]; then
+    && "${full_control}" == "absent" && "${full_documents}" == "absent" ]]; then
     full_mode="DESTROYED"
   elif full_environment_complete && [[ "${full_cluster}" == "present" && "${full_control}" == "present" ]]; then
     full_mode="DEPLOYED"
@@ -642,7 +657,7 @@ RoleCallAI full-environment status
   default Firestore:       ${full_default_location} (must remain ${FULL_DEFAULT_DATABASE_LOCATION})
   GKE cluster:             ${full_cluster}
   Cloud Run control/jobs:  ${full_control} / ${full_jobs}
-  Memorystore Redis:       ${full_redis}
+  private document bucket: ${full_documents}
   Artifact Registry:       ${full_artifact}
 EOF
 }

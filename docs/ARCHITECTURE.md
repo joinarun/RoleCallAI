@@ -1,9 +1,8 @@
-# RoleCallAI development architecture
+# RoleCallAI secure development architecture
 
-This is the Phase 1 topology for the locally configured Google Cloud project.
-New application processing and product data are in `europe-west4`; an existing
-`(default)` Firestore database is not used.
-Document upload and RAG are not part of this build.
+RoleCallAI runs in Google Cloud project `proofroom-506314`. New application
+processing and product data stay in `europe-west4`; the unrelated Firestore
+`(default)` database is never addressed by the application or lifecycle scripts.
 
 ## System diagram
 
@@ -11,144 +10,142 @@ Document upload and RAG are not part of this build.
 
 ```mermaid
 flowchart TB
-    subgraph Clients["Users"]
-        direction LR
-        Admin["Admin browser"]
-        People["Participant browsers<br/>2-10 people per room"]
+    subgraph Users[Browsers]
+      A[Admin]
+      P[Participants<br/>2-10 per room]
     end
 
-    subgraph EU["Google Cloud · europe-west4"]
-        direction TB
+    subgraph GCP[Google Cloud - europe-west4]
+      subgraph Always[Addressable and scale-to-zero]
+        WEB[Cloud Run web + FastAPI<br/>1 service, 0-10 instances]
+        JOBS[Cloud Run async API<br/>1 service, 0-10 instances]
+        WAKE[Cloud Run Jobs<br/>wake + suspend]
+      end
 
-        subgraph Serverless["Serverless application"]
-            direction LR
-            CRControl["Cloud Run: web + control API<br/>1 service · 0-10 instances"]
-            CRJobs["Cloud Run: async jobs<br/>1 service · 0-10 instances"]
+      CAPTCHA[reCAPTCHA<br/>checkbox + risk assessment]
+      SM[Secret Manager<br/>4 regional secrets]
+      KMS[Cloud KMS<br/>1 symmetric key]
+      DB[(Firestore Native<br/>rolecall-dev + vector indexes)]
+      GCS[(Cloud Storage<br/>private document originals)]
+      PS[Pub/Sub<br/>8 topics + 4 push subscriptions]
+      SCH[Cloud Scheduler<br/>3 jobs]
+      AI[Vertex AI<br/>Gemini Live, summary, embeddings<br/>and Memory Bank]
+
+      subgraph Voice[Voice plane - SLEEPING or READY]
+        LB[Signaling + TURN load balancers<br/>absent while sleeping]
+        subgraph GKE[GKE Standard - europe-west4-a]
+          MEDIA[Media pool<br/>0 sleeping / 1 running / 3 max nodes]
+          WORKERS[Worker pool<br/>0 sleeping / 2 running / 6 max nodes]
+          LK[LiveKit<br/>0 or 1-3 pods]
+          ADK[Google ADK RTC workers<br/>0 or 2-6 pods]
+          REDIS[(Ephemeral Redis<br/>0 or 1 pod)]
+          EDGE[2 ingress + 3 cert-manager pods<br/>0 or 5 pods]
         end
+      end
 
-        subgraph VPC["RoleCall VPC + Cloud NAT"]
-            direction TB
-            subgraph Edge["Regional public edge · 2 reserved IPs"]
-                direction LR
-                SignalEdge["Signaling load balancer<br/>TCP 80/443"]
-                TurnEdge["TURN load balancer<br/>TCP 5349 + UDP 3478"]
-            end
-
-            subgraph GKE["Zonal GKE Standard · europe-west4-a<br/>2 pools · 3 nodes minimum / 9 maximum"]
-                direction LR
-                subgraph Media["Media pool<br/>1-3 e2-standard-4 nodes"]
-                    LiveKit["LiveKit Server<br/>1-3 pods · host networking"]
-                end
-                subgraph Workers["Worker pool<br/>2-6 e2-standard-4 nodes"]
-                    SignalIngress["Signaling ingress-nginx<br/>1 pod"]
-                    TurnIngress["TURN ingress-nginx<br/>1 pod"]
-                    AgentWorker["ADK + LiveKit RTC worker<br/>2-6 pods"]
-                    Certs["cert-manager<br/>3 pods"]
-                end
-            end
-        end
-
-        subgraph Managed["Managed data and AI"]
-            direction LR
-            Firestore[("Firestore Native<br/>rolecall-dev · 1 database")]
-            Redis[("Memorystore Redis Basic<br/>1 instance · 1 GiB")]
-            Secrets["Secret Manager<br/>3 secrets"]
-            Memory["Vertex AI Agent Platform<br/>1 Memory Bank"]
-            GeminiLive["Vertex AI Gemini Live<br/>native-audio voice model"]
-            GeminiSummary["Vertex AI Gemini<br/>EU summary/evaluation model"]
-        end
-
-        subgraph Operations["Events, build, and operations"]
-            direction LR
-            Scheduler["Cloud Scheduler<br/>2 jobs"]
-            PubSub["Pub/Sub<br/>4 topics · 2 push subscriptions"]
-            CloudBuild["Cloud Build + source staging<br/>manual builds · 0 normally"]
-            Artifact["Artifact Registry<br/>1 Docker repository"]
-            Observe["Cloud Logging, Monitoring, Trace<br/>1 dashboard · 4 alerts"]
-        end
+      OBS[Cloud Logging, Monitoring and Trace]
+      AR[Artifact Registry + Cloud Build]
     end
 
-    Admin -->|"admin capability over HTTPS"| CRControl
-    People -->|"seat capability, join, captions"| CRControl
-    People <-->|"WebSocket signaling"| SignalEdge
-    People <-->|"TURN fallback"| TurnEdge
-    People <-->|"direct WebRTC media<br/>UDP 50000-60000 or TCP 7881"| LiveKit
+    A -->|login and admin APIs| WEB
+    WEB --> CAPTCHA
+    WEB --> SM
+    WEB --> DB
+    WEB --> KMS
+    WEB --> GCS
+    P -->|seat capability and lobby| WEB
 
-    SignalEdge --> SignalIngress --> LiveKit
-    TurnEdge --> TurnIngress --> LiveKit
-    CRControl -->|"room + JWT API"| LiveKit
-    LiveKit <-->|"room audio + data"| AgentWorker
-    AgentWorker <-->|"PCM audio + tool calls"| GeminiLive
+    WEB -->|document event| PS
+    PS --> JOBS
+    JOBS --> GCS
+    JOBS --> DB
+    JOBS --> AI
 
-    CRControl --> Firestore
-    CRControl --> Redis
-    CRControl --> Secrets
-    AgentWorker --> Firestore
-    AgentWorker --> Redis
-    AgentWorker --> Memory
-    AgentWorker --> Secrets
+    SCH -->|outbox, retention, idle check| JOBS
+    JOBS -->|start guarded operation| WAKE
+    WAKE --> GKE
+    WAKE --> LB
+    WEB -->|admin-only wake| WAKE
 
-    Scheduler -->|"outbox + retention"| CRJobs
-    CRJobs <-->|"publish + OIDC push"| PubSub
-    CRJobs --> Firestore
-    CRJobs --> Memory
-    CRJobs --> GeminiSummary
+    P <-->|WebRTC when READY| LB
+    LB <--> LK
+    LK <--> ADK
+    ADK <--> REDIS
+    ADK <--> AI
+    ADK --> DB
 
-    CloudBuild -->|"push images"| Artifact
-    Artifact -.-> CRControl
-    Artifact -.-> CRJobs
-    Artifact -.-> AgentWorker
-    CRControl -.-> Observe
-    CRJobs -.-> Observe
-    AgentWorker -.-> Observe
+    WEB -. redacted telemetry .-> OBS
+    JOBS -. redacted telemetry .-> OBS
+    ADK -. redacted telemetry .-> OBS
+    AR -. images .-> WEB
+    AR -. images .-> JOBS
+    AR -. images .-> ADK
 ```
 
-The two load-balanced endpoints provide stable TLS signaling and TURN addresses.
-LiveKit media itself uses direct public networking on the dedicated media node,
-which is why the media pool uses GKE Standard with host networking rather than
-Cloud Run, Autopilot, or a private-only cluster.
+## Runtime shapes
 
-## Deployed counts and scale limits
+| Resource | `SLEEPING` | `READY` minimum | Maximum |
+| --- | ---: | ---: | ---: |
+| Cloud Run web/control | 0 idle instances; starts on request | demand-based | 10 |
+| Cloud Run async API | 0 idle instances | demand-based | 10 |
+| Cloud Run runtime jobs | 0 | 0 except during transition | 1 task per job |
+| GKE media nodes | 0 | 1 `e2-standard-4` | 3 |
+| GKE worker nodes | 0 | 2 `e2-standard-4` | 6 |
+| LiveKit pods | 0 | 1 | 3 |
+| ADK voice-worker pods | 0 | 2 | 6 |
+| Ephemeral Redis pods | 0 | 1 | 1 |
+| Ingress and cert-manager pods | 0 | 5 | 5 |
+| Repository-managed GKE pods | **0** | **9** | **15** |
+| Signaling/TURN load-balancer services | 0 | 2 services / 3 forwarding rules | fixed |
 
-| Layer | Deployed minimum / current steady state | Configured ceiling | Notes |
-| --- | ---: | ---: | --- |
-| Cloud Run web/control | 0 idle instances | 10 | One service; starts on an HTTP request. |
-| Cloud Run async jobs | 0 idle instances | 10 | One internal service; invoked by Scheduler and Pub/Sub. |
-| GKE cluster | 1 zonal Standard cluster | 1 | Google manages the control plane. |
-| GKE media nodes | 1 `e2-standard-4` | 3 | Public IP, host networking, 50 GiB balanced boot disk. |
-| GKE worker nodes | 2 `e2-standard-4` | 6 | ADK workers, ingress, cert-manager, and GKE system workloads. |
-| LiveKit pods | 1 | 3 | One media pod per media node. |
-| RoleCall ADK worker pods | 2 | 6 | Each process handles one live meeting at a time. |
-| Ingress controller pods | 2 total | 2 | One signaling pod and one TURN pod. |
-| cert-manager pods | 3 total | 3 | Controller, CA injector, and webhook. |
-| Repository-managed GKE pods | **8 total** | **14 total** | Excludes GKE-managed system pods and DaemonSets, whose count follows node count. |
-| Memorystore Redis | 1 Basic instance, 1 GiB | 1 | LiveKit routing, capability state, and rate limits. |
-| Firestore | 1 named Native database | 1 | Rooms, occurrences, captions, outcomes, outbox, and retention metadata. |
-| Agent Platform | 1 Memory Bank | 1 | Cross-meeting room memory; no RAG corpus. |
-| Public edge | 2 reserved IPs, 2 load-balanced endpoints, 3 forwarding rules | Fixed | Signaling TCP plus TURN TCP/UDP. |
-| Scheduler / Pub/Sub | 2 jobs, 4 topics, 2 subscriptions | Fixed | Includes two dead-letter topics. |
-| Security / identity | 3 secrets, 7 service accounts | Fixed | Secret Manager, IAM, and Workload Identity; no key files. |
-| Build | 0 active builds normally, 1 image repository | On demand | Manual Cloud Build, Cloud Storage source staging, and Artifact Registry. |
-| Observability | 1 dashboard, 4 alert policies, 4 log-based metrics | Fixed configuration | Cloud Logging, Monitoring, managed Prometheus, and Trace. |
+GKE system DaemonSets and control-plane components are not included in the pod
+count. The normal running shape is three nodes and nine repository-managed pods.
+The sleeping shape retains the zonal GKE control plane but has zero nodes, zero
+voice pods, and no LiveKit/TURN load-balancer services.
 
-The normal running minimum is three VM nodes and eight repository-managed pods.
-Cloud Run does not reserve an instance at idle because both services have a
-minimum of zero.
+## Managed resource inventory
+
+| Area | Provisioned resources | Purpose |
+| --- | --- | --- |
+| Identity | 8 service accounts, Workload Identity | Least-privilege application, build, scheduler and runtime roles. |
+| Authentication | 1 reCAPTCHA key, 1 regional admin-credential secret | Shared admin login, Account Defender signals and versioned session invalidation. |
+| Capabilities | 1 regional KMS key | Encrypt recoverable participant links; verification still uses SHA-256 digests. |
+| Data | 1 named Firestore database | Rooms, sessions, throttles, transcripts, recaps, runtime state and 768-dimensional vectors. |
+| Documents | 1 private regional bucket | Immutable PDF, DOCX, PPTX, TXT and Markdown versions. |
+| Events | 4 event topics, 4 dead-letter topics, 4 push subscriptions | Post-processing, retention, document indexing and runtime control. |
+| Scheduling | 3 Scheduler jobs | Minute outbox drain, daily retention cleanup and five-minute idle check. |
+| AI | Gemini Live, Gemini summary, `gemini-embedding-001`, Memory Bank | Voice reasoning, recaps, document embeddings and retained meeting facts. |
+| Secrets | 4 Secret Manager secrets | Admin hash, cookie signing and LiveKit API credentials. |
+| Delivery | 1 Artifact Registry repository; manual Cloud Build | Control, jobs and worker images. |
 
 ## Trust and data boundaries
 
-- The deterministic controller owns lifecycle, time, turn order, and LiveKit
-  publish permissions; Gemini cannot bypass those checks.
-- Capability secrets are exchanged from URL fragments and only SHA-256 digests
-  are stored. Raw audio stays in bounded memory and is never recorded.
-- Final transcript segments, recaps, and curated memory are retained for 90 days.
-- Browsers never access Firestore, Redis, Memory Bank, Secret Manager, or Gemini
-  directly. All product-data access is server-scoped.
-- LiveKit and the workers use private Redis connectivity inside the VPC. Cloud
-  NAT supplies controlled outbound access from GKE to Google APIs.
+- The admin cookie and participant capability cookie are separate. Admin APIs
+  require authentication plus Origin and CSRF validation.
+- Participant links are decrypted only on an explicit authenticated request,
+  returned with `Cache-Control: no-store`, and never written to telemetry.
+- The deterministic meeting controller owns lifecycle, floor, timer and LiveKit
+  publish permissions. Gemini cannot override those controls.
+- `search_room_docs(query)` is server-scoped to the occurrence's frozen ready
+  document versions. The model never supplies a room, document or occurrence ID.
+- Retrieved document text is evidence, never instructions. It cannot alter
+  authorization, tool access, retention or meeting control.
+- Browsers never access Firestore, GCS, KMS, Memory Bank or Gemini directly.
+- Only finalized captions are persisted. Raw audio remains bounded in memory and
+  LiveKit egress recording is not configured.
+- Documents, chunks, transcripts, citations, recaps and memory facts expire
+  after 90 days or are removed sooner through authenticated deletion.
+- GenAI content capture is disabled; credentials, tokens, prompts, transcripts,
+  document excerpts and audio are excluded from logs and traces.
 
-## Related material
+## Sleep boundary
 
-- [Normal use-case flow](FLOW.md)
-- [Suspend and resume runbook](OPERATIONS.md)
-- [Current cost model](../infra/terraform/COST_ESTIMATE.md)
+Real admin or participant interaction updates activity at most once per minute.
+A passive browser tab does not. Every five minutes the scheduler checks whether
+30 minutes have elapsed with no active lobby or meeting. The guarded suspend job
+then blocks joins, removes the LiveKit/TURN services, scales workloads to zero,
+and resizes both node pools to zero. Only an authenticated admin can request a
+wake; participants receive a typed `runtime_asleep` response.
+
+Related material: [normal flow](FLOW.md), [operations](OPERATIONS.md), and
+[current cost estimate](../infra/terraform/COST_ESTIMATE.md).

@@ -116,7 +116,9 @@ resource "google_cloud_run_v2_service" "control" {
     google_artifact_registry_repository.rolecall,
     google_project_iam_member.runtime,
     google_secret_manager_secret_version.rolecall,
-    google_redis_instance.rolecall,
+    google_secret_manager_secret_version.admin_credentials_bootstrap,
+    google_secret_manager_secret_iam_member.admin_credentials_control,
+    google_kms_crypto_key.seat_links,
   ]
 }
 
@@ -215,7 +217,75 @@ resource "google_cloud_run_v2_service" "jobs" {
     google_artifact_registry_repository.rolecall,
     google_project_iam_member.runtime,
     google_secret_manager_secret_version.rolecall,
-    google_redis_instance.rolecall,
+    google_storage_bucket.documents,
+  ]
+}
+
+resource "google_cloud_run_v2_job" "runtime" {
+  for_each = {
+    wake    = local.runtime_wake_job
+    suspend = local.runtime_suspend_job
+  }
+
+  name                = each.value
+  location            = var.region
+  deletion_protection = false
+  labels              = var.labels
+
+  template {
+    task_count  = 1
+    parallelism = 1
+
+    template {
+      service_account = google_service_account.rolecall["runtime_manager"].email
+      timeout         = "1200s"
+      max_retries     = 0
+
+      containers {
+        name    = "runtime-manager"
+        image   = local.images.jobs
+        command = ["/opt/rolecall-venv/bin/python", "-m", "app.runtime_manager"]
+
+        dynamic "env" {
+          for_each = local.common_env
+          content {
+            name  = env.key
+            value = env.value
+          }
+        }
+
+        env {
+          name  = "ROLECALL_RUNTIME_ACTION"
+          value = each.key
+        }
+        env {
+          name  = "ROLECALL_RUNTIME_OPERATION_ID"
+          value = "overridden-at-dispatch"
+        }
+        env {
+          name = "ROLECALL_COOKIE_SIGNING_KEY"
+          value_source {
+            secret_key_ref {
+              secret  = google_secret_manager_secret.rolecall["cookie-signing-key"].secret_id
+              version = "latest"
+            }
+          }
+        }
+
+        resources {
+          limits = {
+            cpu    = "1"
+            memory = "1Gi"
+          }
+        }
+      }
+    }
+  }
+
+  depends_on = [
+    google_project_iam_member.runtime,
+    google_secret_manager_secret_version.rolecall,
+    google_container_cluster.rolecall,
   ]
 }
 

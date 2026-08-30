@@ -25,22 +25,6 @@ resource "google_compute_subnetwork" "rolecall" {
   private_ip_google_access = true
 }
 
-resource "google_compute_global_address" "service_range" {
-  name          = "${local.prefix}-services"
-  purpose       = "VPC_PEERING"
-  address_type  = "INTERNAL"
-  prefix_length = 16
-  network       = google_compute_network.rolecall.id
-}
-
-resource "google_service_networking_connection" "private_services" {
-  network                 = google_compute_network.rolecall.id
-  service                 = "servicenetworking.googleapis.com"
-  reserved_peering_ranges = [google_compute_global_address.service_range.name]
-
-  depends_on = [google_project_service.required]
-}
-
 resource "google_compute_router" "rolecall" {
   name    = "${local.prefix}-router"
   region  = var.region
