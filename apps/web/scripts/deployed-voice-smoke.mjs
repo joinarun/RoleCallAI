@@ -6,6 +6,7 @@ const baseURL = process.env.ROLECALL_SMOKE_BASE_URL?.replace(/\/$/, "");
 const storageStatePath = process.env.ROLECALL_SMOKE_ADMIN_STORAGE_STATE;
 const firstAudio = process.env.ROLECALL_SMOKE_AUDIO_ONE;
 const secondAudio = process.env.ROLECALL_SMOKE_AUDIO_TWO;
+const fixtureRoomId = process.env.ROLECALL_SMOKE_FIXTURE_ROOM_ID;
 const smokeRole = process.env.ROLECALL_SMOKE_ROLE ?? "SCRUM_MASTER";
 const smokeGame = smokeRole === "FUN_FRIDAY" ? "RAPID_FIRE_TRIVIA" : null;
 const smokeInstructions =
@@ -119,21 +120,36 @@ async function waitForIdle() {
 }
 
 try {
-  const created = await jsonResponse(
-    await adminApi.post("/v1/admin/rooms", {
-      headers: mutationHeaders,
-      data: {
-        name: `Deployed ${smokeRole.toLowerCase()} voice smoke ${Date.now()}`,
-        expectedParticipants: 2,
-        durationMinutes: 5,
-        role: smokeRole,
-        agentName: "Nova",
-        instructions: smokeInstructions,
-        game: smokeGame,
-      },
-    }),
-    "create smoke room",
-  );
+  let created;
+  if (fixtureRoomId) {
+    const dashboard = await jsonResponse(
+      await adminApi.get("/v1/admin/rooms"),
+      "read fixture room",
+    );
+    const fixture = dashboard.rooms.find((item) => item.room.id === fixtureRoomId);
+    if (!fixture) throw new Error("Smoke fixture room was not found");
+    const seatUrls = await jsonResponse(
+      await adminApi.get(`/v1/admin/rooms/${fixtureRoomId}/seat-links`),
+      "read fixture participant links",
+    );
+    created = { room: fixture.room, seatUrls };
+  } else {
+    created = await jsonResponse(
+      await adminApi.post("/v1/admin/rooms", {
+        headers: mutationHeaders,
+        data: {
+          name: `Deployed ${smokeRole.toLowerCase()} voice smoke ${Date.now()}`,
+          expectedParticipants: 2,
+          durationMinutes: 5,
+          role: smokeRole,
+          agentName: "Nova",
+          instructions: smokeInstructions,
+          game: smokeGame,
+        },
+      }),
+      "create smoke room",
+    );
+  }
   roomId = created.room.id;
 
   const firstSlot = created.seatUrls[0].slotId;

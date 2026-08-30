@@ -94,9 +94,12 @@ try {
   });
   await card.getByText("Nova Prime · Scrum Master", { exact: true }).waitFor();
   await card.getByRole("button", { name: /manage room/i }).click();
-  if ((await card.locator(".dashboard-seat").count()) !== 2) {
-    throw new Error("Admin dashboard did not render both participant links");
-  }
+  await waitUntil(
+    "admin participant links",
+    async () => ((await card.locator(".room-control-drawer .dashboard-seat").count()) === 2),
+    30_000,
+    500,
+  );
 
   await page.goto(created.seatUrls[0].url);
   await page.getByRole("heading", { name: /sound good/i }).waitFor();
@@ -124,13 +127,16 @@ try {
 
   await page.getByRole("link", { name: /return to home workspace/i }).click();
   await page.getByRole("heading", { name: /rooms, people and outcomes/i }).waitFor();
+  const historyRow = page.locator(".workspace-history-row").filter({
+    hasText: created.room.name,
+  });
   await waitUntil(
     "home workspace history",
-    async () => (await page.locator(".workspace-history-row").count()) === 1,
+    async () => (await historyRow.count()) === 1,
     30_000,
     1_000,
   );
-  await page.getByText("UI Smoke Person", { exact: true }).first().waitFor();
+  await historyRow.getByText("UI Smoke Person", { exact: true }).waitFor();
 
   await waitForIdle();
   await jsonResponse(
