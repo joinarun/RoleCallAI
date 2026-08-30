@@ -4,6 +4,8 @@ RoleCallAI automatically suspends its expensive voice plane after 30 minutes
 without genuine UI or meeting activity. The Cloud Run web/bootstrap service
 remains addressable at the existing `run.app` URL and scales to zero between
 requests. Room management and document indexing still work while voice sleeps.
+The currently deployed revisions and acceptance evidence are recorded in
+[DEPLOYMENT.md](DEPLOYMENT.md).
 
 ## Normal admin workflow
 

@@ -134,3 +134,7 @@ The floor controller, not Gemini, controls turn order and microphones. An admin
 may delegate “end for everyone” to selected seats. Late arrivals join the
 remaining turn order, disconnected speakers retain the floor for 30 seconds,
 and a failed agent is allowed 60 seconds to recover before partial processing.
+
+See [deployment status](DEPLOYMENT.md) for the verified live revisions and
+end-to-end acceptance results, and [operations](OPERATIONS.md) for the wake and
+suspend runbook.

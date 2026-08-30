@@ -30,6 +30,12 @@ Secret Manager is the runtime source of truth. Keep state, saved plans and
 variable files local, encrypted, and uncommitted. Before apply, verify the ACME
 contact in `vars/dev.tfvars`.
 
+The last applied release, live revision identifiers, migration counts and
+acceptance evidence are recorded in
+[`docs/DEPLOYMENT.md`](../../docs/DEPLOYMENT.md). Because runtime sleep creates
+intentional reversible drift, wake the voice plane before generating a normal
+Terraform convergence plan.
+
 Start from the committed template:
 
 ```bash

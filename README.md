@@ -64,6 +64,8 @@ current run-rate model is in
 
 Project diagrams and the cost-saving runtime controls are documented here:
 
+- [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) — current deployed revisions,
+  migration result, runtime state, and acceptance evidence.
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — Google services, topology,
   node counts, pod counts, and scale limits.
 - [`docs/FLOW.md`](docs/FLOW.md) — normal room and meeting sequence.

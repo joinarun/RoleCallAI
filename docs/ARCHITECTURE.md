@@ -147,5 +147,6 @@ then blocks joins, removes the LiveKit/TURN services, scales workloads to zero,
 and resizes both node pools to zero. Only an authenticated admin can request a
 wake; participants receive a typed `runtime_asleep` response.
 
-Related material: [normal flow](FLOW.md), [operations](OPERATIONS.md), and
+Related material: [deployment status](DEPLOYMENT.md), [normal flow](FLOW.md),
+[operations](OPERATIONS.md), and
 [current cost estimate](../infra/terraform/COST_ESTIMATE.md).

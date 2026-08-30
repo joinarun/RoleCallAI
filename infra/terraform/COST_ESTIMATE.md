@@ -1,5 +1,9 @@
 # RoleCallAI development cost estimate
 
+The deployed environment is currently kept in the automatically sleeping shape
+described below. See [`docs/DEPLOYMENT.md`](../../docs/DEPLOYMENT.md) for the
+verified zero-node and load-balancer state.
+
 Estimate date: **2026-08-31**. Currency: **USD list price**, before tax,
 contract discounts and internet data transfer. A month is modeled as 730 hours.
 This is a planning estimate, not a billing quote.
