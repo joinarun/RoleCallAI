@@ -55,6 +55,7 @@ def test_legacy_creation_is_rejected_and_authenticated_dashboard_lists_all_rooms
         app.state.container = container
         assert client.post("/v1/rooms", json=room_payload()).status_code == 401
         assert client.get("/v1/admin/rooms").status_code == 401
+        assert client.post("/v1/admin/rooms", json={}).status_code == 401
         headers = login_admin(client)
         first = create_room(client, headers, "Dashboard one")
         second = create_room(client, headers, "Dashboard two")

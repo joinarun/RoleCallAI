@@ -160,6 +160,12 @@ resource "google_firestore_index" "document_vector" {
     field_path = "version_id"
     order      = "ASCENDING"
   }
+  # Firestore inserts the document-name tiebreaker before vector fields. Declare
+  # it explicitly so the provider's ordered field list converges after create.
+  fields {
+    field_path = "__name__"
+    order      = "ASCENDING"
+  }
   fields {
     field_path = "embedding"
     vector_config {

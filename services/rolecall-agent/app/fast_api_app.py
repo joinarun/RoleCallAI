@@ -21,6 +21,11 @@ from app.observability import configure_observability
 logger = logging.getLogger("rolecall.control_plane")
 WORKSPACE_ROOT = Path(__file__).resolve().parents[3]
 WEB_DIST = WORKSPACE_ROOT / "apps" / "web" / "dist"
+ADMIN_COOKIE_GUARDED_PATHS = {
+    "/v1/auth/logout",
+    "/v1/runtime:wake",
+    "/v1/runtime/activity",
+}
 
 
 @asynccontextmanager
@@ -62,7 +67,21 @@ if _is_local:
 
 @app.middleware("http")
 async def security_headers(request: Request, call_next):  # type: ignore[no-untyped-def]
-    response = await call_next(request)
+    path = request.url.path
+    needs_admin_cookie = path.startswith("/v1/admin/") or path in ADMIN_COOKIE_GUARDED_PATHS
+    if needs_admin_cookie:
+        container = getattr(request.app.state, "container", _initial_container)
+        if not request.cookies.get(container.settings.admin_cookie_name):
+            response = JSONResponse(
+                status_code=401,
+                content={
+                    "error": {"code": "unauthorized", "message": "Admin login required"}
+                },
+            )
+        else:
+            response = await call_next(request)
+    else:
+        response = await call_next(request)
     response.headers["Referrer-Policy"] = "no-referrer"
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
@@ -77,7 +96,7 @@ async def security_headers(request: Request, call_next):  # type: ignore[no-unty
     )
     if not _is_local:
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
-    if request.url.path.startswith("/v1/"):
+    if path.startswith("/v1/"):
         response.headers.setdefault("Cache-Control", "no-store")
     return response
 
