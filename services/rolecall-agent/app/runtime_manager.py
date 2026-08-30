@@ -225,7 +225,7 @@ def _restore_runtime_guards(
             autoscaling.create_namespaced_horizontal_pod_autoscaler("rolecall", body)
         except ApiException as exc:
             if exc.status == 409:
-                autoscaling.replace_namespaced_horizontal_pod_autoscaler(name, "rolecall", body)
+                autoscaling.patch_namespaced_horizontal_pod_autoscaler(name, "rolecall", body)
             else:
                 raise
         pdb = client.V1PodDisruptionBudget(
@@ -239,7 +239,7 @@ def _restore_runtime_guards(
             policy.create_namespaced_pod_disruption_budget("rolecall", pdb)
         except ApiException as exc:
             if exc.status == 409:
-                policy.replace_namespaced_pod_disruption_budget(name, "rolecall", pdb)
+                policy.patch_namespaced_pod_disruption_budget(name, "rolecall", pdb)
             else:
                 raise
 
