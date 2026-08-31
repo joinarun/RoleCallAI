@@ -34,3 +34,6 @@ infra/terraform/resource-inventory.txt
 local-data/
 tmp/
 services/rolecall-agent/artifacts/
+.codex-tmp/
+docs/presentation/*/
+docs/presentation/*.inspect.ndjson

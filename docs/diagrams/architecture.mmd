@@ -1,38 +1,48 @@
+%%{init: {"theme":"base","themeVariables":{"background":"#070b22","primaryColor":"#151b3b","primaryTextColor":"#f7f7ff","primaryBorderColor":"#8077ff","lineColor":"#6be3bd","secondaryColor":"#101735","tertiaryColor":"#0b102b","clusterBkg":"#0b102b","clusterBorder":"#39406b","noteBkgColor":"#1b244d","noteTextColor":"#f7f7ff","noteBorderColor":"#ff8c86","actorBkg":"#151b3b","actorBorder":"#8077ff","actorTextColor":"#f7f7ff","signalColor":"#6be3bd","signalTextColor":"#dfe4ff","labelBoxBkgColor":"#101735","labelBoxBorderColor":"#8077ff","labelTextColor":"#f7f7ff","loopTextColor":"#f7f7ff"}}}%%
 flowchart TB
+    subgraph Build[One-time build-time media - global]
+      DEV[Developer cost approval]
+      LYRIA[Lyria 3 Pro Preview<br/>1 fixed prompt / 1 request]
+      MP3[Static MP3 + provenance<br/>no user or meeting data]
+      DEV --> LYRIA --> MP3
+    end
     subgraph Users[Browsers]
       A[Admin]
       P[Participants<br/>2-10 per room]
     end
-    subgraph GCP[Google Cloud - europe-west4]
-      subgraph Always[Addressable and scale-to-zero]
-        WEB[Cloud Run web + FastAPI<br/>1 service, 0-10 instances]
-        JOBS[Cloud Run async API<br/>1 service, 0-10 instances]
+    subgraph GCP[Google Cloud runtime and product data - europe-west4]
+      subgraph Serverless[Addressable and min-zero]
+        WEB[Cloud Run React + FastAPI<br/>1 service / 0-10 instances]
+        JOBS[Cloud Run async API<br/>1 service / 0-10 instances]
         WAKE[Cloud Run Jobs<br/>wake + suspend]
       end
-      CAPTCHA[reCAPTCHA<br/>checkbox + risk assessment]
+      CAPTCHA[reCAPTCHA Enterprise]
       SM[Secret Manager<br/>4 regional secrets]
       KMS[Cloud KMS<br/>1 symmetric key]
       DB[(Firestore Native<br/>rolecall-dev + vector indexes)]
-      GCS[(Cloud Storage<br/>private document originals)]
-      PS[Pub/Sub<br/>8 topics + 4 subscriptions]
+      GCS[(Cloud Storage<br/>private originals)]
+      PS[Pub/Sub<br/>8 topics + 4 push subscriptions]
       SCH[Cloud Scheduler<br/>3 jobs]
-      AI[Vertex AI<br/>Gemini Live, summary, embeddings<br/>and Memory Bank]
+      AI[Vertex AI / Agent Platform<br/>Gemini Live + 3.7 recap<br/>embeddings + Memory Bank]
+      OBS[Logging + Monitoring + Trace]
+      AR[Artifact Registry + Cloud Build]
       subgraph Voice[Voice plane - SLEEPING or READY]
-        LB[Signaling + TURN load balancers<br/>absent while sleeping]
+        LB[LiveKit signaling + TURN LBs<br/>0 sleeping / 2 services READY]
         subgraph GKE[GKE Standard - europe-west4-a]
-          MEDIA[Media pool - e2-standard-2<br/>0 / 1 / 3 nodes]
-          WORKERS[Worker pool - e2-standard-2<br/>0 / 2 / 6 nodes]
-          LK[LiveKit<br/>0 or 1-3 pods]
-          ADK[Google ADK workers<br/>0 or 2-6 pods<br/>2 CPU / 4 GiB limits]
-          REDIS[(Ephemeral Redis<br/>0 or 1 pod)]
-          EDGE[Ingress + cert-manager<br/>0 or 5 pods]
+          MEDIA[Media pool e2-standard-2<br/>0 / 1 / 3 nodes]
+          WORKERS[Worker pool e2-standard-2<br/>0 / 2 / 6 nodes]
+          LK[LiveKit<br/>0 / 1 / 3 pods]
+          ADK[ADK RTC workers<br/>0 / 2 / 6 pods]
+          REDIS[(Ephemeral Redis<br/>0 / 1 pod)]
+          EDGE[Ingress + cert-manager<br/>0 / 5 pods]
         end
       end
-      OBS[Logging, Monitoring and Trace]
-      AR[Artifact Registry + Cloud Build]
     end
-    A -->|login and admin APIs| WEB
-    P -->|seat capability and lobby| WEB
+    MP3 -->|bundled once| AR
+    AR --> WEB
+    WEB -->|same-origin static lobby audio| P
+    A -->|login + admin APIs| WEB
+    P -->|capability + lobby| WEB
     WEB --> CAPTCHA
     WEB --> SM
     WEB --> KMS
@@ -40,15 +50,15 @@ flowchart TB
     WEB --> GCS
     WEB --> PS
     PS --> JOBS
+    SCH --> JOBS
     JOBS --> GCS
     JOBS --> DB
     JOBS --> AI
-    SCH --> JOBS
     JOBS --> WAKE
     WEB -->|admin-only wake| WAKE
     WAKE --> GKE
     WAKE --> LB
-    P <-->|WebRTC when READY| LB
+    P <-->|WebRTC only when READY| LB
     LB <--> LK
     LK <--> ADK
     ADK <--> REDIS
@@ -57,6 +67,3 @@ flowchart TB
     WEB -. redacted telemetry .-> OBS
     JOBS -. redacted telemetry .-> OBS
     ADK -. redacted telemetry .-> OBS
-    AR -. images .-> WEB
-    AR -. images .-> JOBS
-    AR -. images .-> ADK

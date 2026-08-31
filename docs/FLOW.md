@@ -1,100 +1,71 @@
 # RoleCallAI normal use-case flow
 
-## End-to-end flow
-
 [Open the zoomable sequence export](diagrams/normal-use-flow.svg).
 
 ```mermaid
+%%{init: {"theme":"base","themeVariables":{"background":"#070b22","primaryColor":"#151b3b","primaryTextColor":"#f7f7ff","primaryBorderColor":"#8077ff","lineColor":"#6be3bd","secondaryColor":"#101735","tertiaryColor":"#0b102b","clusterBkg":"#0b102b","clusterBorder":"#39406b","noteBkgColor":"#1b244d","noteTextColor":"#f7f7ff","noteBorderColor":"#ff8c86","actorBkg":"#151b3b","actorBorder":"#8077ff","actorTextColor":"#f7f7ff","signalColor":"#6be3bd","signalTextColor":"#dfe4ff","labelBoxBkgColor":"#101735","labelBoxBorderColor":"#8077ff","labelTextColor":"#f7f7ff","loopTextColor":"#f7f7ff"}}}%%
 sequenceDiagram
     autonumber
     actor Admin
     actor P as Participants
-    participant Web as Cloud Run web/control
+    participant Web as Cloud Run React + FastAPI
     participant Sec as reCAPTCHA + Secret Manager + KMS
     participant DB as Firestore rolecall-dev
-    participant Q as Pub/Sub / async jobs
+    participant Q as Pub/Sub + async jobs
     participant Store as Cloud Storage
-    participant Runtime as Runtime job + GKE
+    participant Runtime as Runtime Job + GKE
     participant LK as LiveKit
-    participant Agent as ADK voice worker
-    participant AI as Vertex AI Gemini
-
-    Admin->>Web: Open landing page and submit login
-    Web->>Sec: Verify CAPTCHA action, hostname, score and account signals
-    Web->>DB: Enforce IP/prefix throttle; create 8-hour session
-    Web-->>Admin: Secure HttpOnly admin cookie + dashboard
-
-    alt Voice runtime is sleeping
-      Admin->>Web: Click Wake voice services
-      Web->>DB: Record genuine activity and WAKING state
-      Web->>Runtime: Start idempotent wake job
-      Runtime->>Runtime: Restore 2 worker + 1 media nodes and 9 pods
-      Runtime->>LK: Restore signaling/TURN services and health-check media
-      Runtime->>DB: Mark READY
-      Web-->>Admin: Poll and show progress (normally 10-20 minutes)
+    participant Agent as ADK RTC worker
+    participant AI as Vertex AI / Agent Platform
+    Admin->>Web: Login with reCAPTCHA
+    Web->>Sec: Verify risk + credential version
+    Web->>DB: Throttle and create 8-hour session
+    alt Voice runtime is SLEEPING
+      Admin->>Web: Wake voice services
+      Web->>Runtime: Start idempotent wake
+      Runtime->>LK: Restore 1 media + 2 worker nodes, 9 pods, TLS and TURN
+      Runtime->>DB: Mark READY after health checks
     end
-
-    Admin->>Web: Create or edit a room
-    Web->>DB: Save owner, role, seats and instructions
-    Web->>Sec: KMS-encrypt each participant capability
+    Admin->>Web: Create room and optional document
+    Web->>Sec: KMS-encrypt seat capabilities
+    opt Document supplied
+      Web->>Store: Save immutable private version
+      Web->>Q: Publish index event
+      Q->>AI: Generate 768D embeddings
+      Q->>DB: Store room-scoped vectors + citations
+    end
     Admin->>Web: Explicitly reveal participant links
-    Web->>Sec: Decrypt seat capabilities
-    Web-->>Admin: no-store link response
-
-    opt Add meeting context
-      Admin->>Web: Upload PDF/DOCX/PPTX/TXT/Markdown
-      Web->>Store: Store immutable private version
-      Web->>Q: Publish document-index event
-      Q->>Store: Malware scan, signature check and text extraction
-      Q->>AI: Create 768-dimensional chunk embeddings
-      Q->>DB: Store sanitized chunks/vectors; atomically mark READY
-      Web-->>Admin: Show indexing status
-    end
-
     loop Each participant
-      P->>Web: Open unique seat link and exchange fragment capability
-      Web->>DB: Verify SHA-256 digest and reject duplicate active seat
-      Web-->>P: Secure participant cookie; scrub URL fragment
-      P->>Web: Enter name, consent and lobby action
-      alt Runtime is not READY
-        Web-->>P: 503 runtime_asleep (participant cannot wake it)
-      else Runtime is READY
-        Web->>DB: First arrival transactionally creates occurrence
-        Web->>DB: Snapshot ready active document versions
-        Web-->>P: LiveKit URL and short-lived JWT
-        P->>LK: Join browser audio room
-      end
+      P->>Web: Exchange URL-fragment capability
+      Web->>DB: Verify digest + seat availability
+      P->>Web: Name + consent + enter room
+      Web-->>P: Same-origin static Lyria MP3
+      Note over P,Web: Local lobby playback only<br/>No model call and no LiveKit music track
+      Web-->>P: Short-lived LiveKit JWT when READY
+      P->>LK: Join browser audio
     end
-
-    Web->>LK: Dispatch occurrence after all seats or two-minute grace
-    LK->>Agent: Worker joins as named facilitator
-    Agent->>DB: Load room, prior recap and frozen document versions
-    Agent->>AI: Start resumable native-audio ADK session
-
-    loop Deterministic turns
-      Agent->>LK: Grant microphone publish only to floor owner
-      P->>LK: Current speaker audio; others may raise hand
-      LK->>Agent: PCM16 audio
-      Agent->>AI: Audio, meeting state and server-scoped tools
-      opt Document context is useful
+    LK->>Agent: Dispatch named facilitator
+    Agent->>DB: Load role, prior recap, frozen documents
+    Note over P,Agent: Lobby music fades/stops before STARTING
+    Agent->>AI: Start resumable Gemini Live session
+    loop Deterministic floor turns
+      Agent->>LK: Enable publish only for floor owner
+      P->>Agent: Speaker audio or reliable hand raise
+      opt Context is useful
         AI->>Agent: search_room_docs(query)
-        Agent->>DB: Vector search within room + frozen versions only
-        DB-->>Agent: Up to 5 sanitized excerpts and citations
+        Agent->>DB: Search room + frozen versions only
       end
       AI-->>Agent: Native audio + finalized caption
-      Agent-->>LK: Audio, caption and source chips
-      LK-->>P: Facilitator response and UI updates
-      Agent->>DB: Persist finalized text/outcomes/citations only
+      Agent-->>P: Voice + caption + citations
+      Agent->>DB: Persist finalized text/outcomes only
     end
-
-    Agent-->>P: Spoken closing recap
-    Agent->>Q: Idempotent post-processing event
-    Q->>AI: Typed summary and validation
-    Q->>DB: Recap, citations and stable-seat memory, then mark COMPLETED
-    Web-->>Admin: History, transcript, recap and meeting quality details
-    Web-->>P: Latest attended recap
-
-    Note over Web,Runtime: After 30 minutes without genuine activity and no active meeting, the scheduler suspends the voice plane.
+    Agent-->>P: Complete spoken closing
+    Agent->>Q: Idempotent post-processing
+    Q->>AI: Gemini 3.7 typed recap
+    Q->>DB: Save recap + memory and mark COMPLETED
+    Web-->>Admin: History + transcript + recap
+    Web-->>P: Attended recap
+    Note over Web,Runtime: 30 idle minutes + no active meeting suspends voice to zero nodes/pods
 ```
 
 ## Runtime lifecycle
@@ -105,12 +76,12 @@ sequenceDiagram
 stateDiagram-v2
     [*] --> SLEEPING
     SLEEPING --> WAKING: authenticated admin wake
-    WAKING --> READY: nodes, pods, TLS and media health pass
+    WAKING --> READY: nodes, pods, TLS and media pass
     WAKING --> ERROR: recovery exhausted
     ERROR --> WAKING: admin retry
     READY --> SUSPENDING: 30m idle + no active occurrence
     SUSPENDING --> SLEEPING: joins blocked, LB removed, nodes zero
-    SUSPENDING --> READY: new protected activity aborts suspension
+    SUSPENDING --> READY: protected activity aborts suspension
 ```
 
 ## Meeting lifecycle
@@ -120,21 +91,20 @@ stateDiagram-v2
 ```mermaid
 stateDiagram-v2
     [*] --> LOBBY: first valid arrival
-    LOBBY --> STARTING: all seats present or grace start
-    STARTING --> RUNNING: worker and Gemini ready
+    LOBBY --> STARTING: all seats or grace start
+    STARTING --> RUNNING: worker + Gemini ready
     RUNNING --> ENDING: timer or authorized end
-    ENDING --> PROCESSING: spoken close completes
-    PROCESSING --> COMPLETED: recap and memory persisted
+    ENDING --> PROCESSING: spoken close finishes
+    PROCESSING --> COMPLETED: recap + memory persisted
     STARTING --> FAILED: unrecoverable startup
-    RUNNING --> PROCESSING: preserve partial meeting after worker failure
+    RUNNING --> PROCESSING: preserve partial meeting after failure
     PROCESSING --> FAILED: post-processing recovery exhausted
 ```
 
-The floor controller, not Gemini, controls turn order and microphones. An admin
-may delegate “end for everyone” to selected seats. Late arrivals join the
-remaining turn order, disconnected speakers retain the floor for 30 seconds,
-and a failed agent is allowed 60 seconds to recover before partial processing.
+The floor controller—not Gemini—controls transitions and microphones. An admin
+can delegate **End for everyone**. Late arrivals join the remaining order;
+disconnected speakers keep the floor for 30 seconds; the worker gets a bounded
+recovery window before partial processing.
 
-See [deployment status](DEPLOYMENT.md) for the verified live revisions and
-end-to-end acceptance results, and [operations](OPERATIONS.md) for the wake and
-suspend runbook.
+See [reproducible testing](REPRODUCIBLE_TESTING.md) for a judge walkthrough and
+[operations](OPERATIONS.md) for wake/suspend behavior.

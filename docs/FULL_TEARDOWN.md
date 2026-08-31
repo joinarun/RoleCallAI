@@ -133,3 +133,7 @@ Create is convergent and may be rerun after correcting the reported problem.
 References: [manage Firestore databases](https://cloud.google.com/firestore/docs/manage-databases),
 [Terraform Firestore database](https://registry.terraform.io/providers/hashicorp/google/latest/docs/resources/firestore_database),
 and [delete a GKE cluster](https://cloud.google.com/kubernetes-engine/docs/how-to/deleting-a-cluster).
+
+The Lyria lobby MP3 is a versioned repository asset, not cloud product data.
+Teardown removes its deployed copies with Cloud Run/Artifact Registry but not
+the source asset in Git; recreation never calls Lyria.

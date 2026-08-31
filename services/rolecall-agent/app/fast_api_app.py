@@ -69,14 +69,12 @@ if _is_local:
 async def security_headers(request: Request, call_next):  # type: ignore[no-untyped-def]
     path = request.url.path
     needs_admin_cookie = path.startswith("/v1/admin/") or path in ADMIN_COOKIE_GUARDED_PATHS
-    if needs_admin_cookie:
+    if needs_admin_cookie and request.method != "OPTIONS":
         container = getattr(request.app.state, "container", _initial_container)
         if not request.cookies.get(container.settings.admin_cookie_name):
             response = JSONResponse(
                 status_code=401,
-                content={
-                    "error": {"code": "unauthorized", "message": "Admin login required"}
-                },
+                content={"error": {"code": "unauthorized", "message": "Admin login required"}},
             )
         else:
             response = await call_next(request)

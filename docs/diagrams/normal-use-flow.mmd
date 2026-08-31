@@ -1,55 +1,63 @@
+%%{init: {"theme":"base","themeVariables":{"background":"#070b22","primaryColor":"#151b3b","primaryTextColor":"#f7f7ff","primaryBorderColor":"#8077ff","lineColor":"#6be3bd","secondaryColor":"#101735","tertiaryColor":"#0b102b","clusterBkg":"#0b102b","clusterBorder":"#39406b","noteBkgColor":"#1b244d","noteTextColor":"#f7f7ff","noteBorderColor":"#ff8c86","actorBkg":"#151b3b","actorBorder":"#8077ff","actorTextColor":"#f7f7ff","signalColor":"#6be3bd","signalTextColor":"#dfe4ff","labelBoxBkgColor":"#101735","labelBoxBorderColor":"#8077ff","labelTextColor":"#f7f7ff","loopTextColor":"#f7f7ff"}}}%%
 sequenceDiagram
     autonumber
     actor Admin
     actor P as Participants
-    participant Web as Cloud Run web/control
+    participant Web as Cloud Run React + FastAPI
     participant Sec as reCAPTCHA + Secret Manager + KMS
     participant DB as Firestore rolecall-dev
-    participant Q as Pub/Sub / async jobs
+    participant Q as Pub/Sub + async jobs
     participant Store as Cloud Storage
-    participant Runtime as Runtime job + GKE
+    participant Runtime as Runtime Job + GKE
     participant LK as LiveKit
-    participant Agent as ADK voice worker
-    participant AI as Vertex AI Gemini
-    Admin->>Web: Login with CAPTCHA
-    Web->>Sec: Verify risk and credential version
+    participant Agent as ADK RTC worker
+    participant AI as Vertex AI / Agent Platform
+    Admin->>Web: Login with reCAPTCHA
+    Web->>Sec: Verify risk + credential version
     Web->>DB: Throttle and create 8-hour session
-    opt Runtime is sleeping
+    opt Runtime is SLEEPING
       Admin->>Web: Wake voice services
-      Web->>Runtime: Start idempotent wake job
-      Runtime->>LK: Restore nodes, 9 pods, TLS and media
-      Runtime->>DB: Mark READY
+      Web->>Runtime: Start idempotent wake
+      Runtime->>LK: Restore 1 media + 2 worker nodes, 9 pods, TLS and TURN
+      Runtime->>DB: Mark READY after health checks
     end
-    Admin->>Web: Create room
-    Web->>Sec: KMS-encrypt seat links
-    opt Add context
-      Admin->>Web: Upload document
-      Web->>Store: Save immutable original
-      Web->>Q: Index event
+    Admin->>Web: Create room and optional document
+    Web->>Sec: KMS-encrypt seat capabilities
+    opt Document supplied
+      Web->>Store: Save immutable private version
+      Web->>Q: Publish index event
       Q->>AI: Generate 768D embeddings
-      Q->>DB: Save sanitized vectors and citations
+      Q->>DB: Store room-scoped vectors + citations
     end
+    Admin->>Web: Explicitly reveal participant links
     loop Each participant
-      P->>Web: Exchange fragment seat capability
-      Web->>DB: Verify digest and create/join occurrence
-      Web-->>P: LiveKit JWT when runtime READY
-      P->>LK: Join audio room
+      P->>Web: Exchange URL-fragment capability
+      Web->>DB: Verify digest + seat availability
+      P->>Web: Name + consent + enter room
+      Web-->>P: Same-origin static Lyria MP3
+      Note over P,Web: Local lobby playback only<br/>No model call and no LiveKit music track
+      Web-->>P: Short-lived LiveKit JWT when READY
+      P->>LK: Join browser audio
     end
-    LK->>Agent: Dispatch facilitator
-    Agent->>AI: Resumable Gemini Live session
-    loop Controlled floor turns
-      Agent->>LK: Grant mic only to floor owner
-      P->>Agent: Speaker audio / hand raise
-      opt Relevant document context
+    LK->>Agent: Dispatch named facilitator
+    Agent->>DB: Load role, prior recap, frozen documents
+    Note over P,Agent: Lobby music fades/stops before STARTING
+    Agent->>AI: Start resumable Gemini Live session
+    loop Deterministic floor turns
+      Agent->>LK: Enable publish only for floor owner
+      P->>Agent: Speaker audio or reliable hand raise
+      opt Context is useful
         AI->>Agent: search_room_docs(query)
-        Agent->>DB: Room + frozen-version vector search
+        Agent->>DB: Search room + frozen versions only
       end
-      AI-->>Agent: Native audio and final caption
-      Agent-->>P: Voice, captions and citation chips
-      Agent->>DB: Final text/outcomes/citations only
+      AI-->>Agent: Native audio + finalized caption
+      Agent-->>P: Voice + caption + citations
+      Agent->>DB: Persist finalized text/outcomes only
     end
-    Agent-->>P: Spoken closing recap
-    Agent->>Q: Post-process
-    Q->>AI: Typed summary
-    Q->>DB: Recap + memory and mark COMPLETED
-    Note over Web,Runtime: 30 idle minutes triggers guarded suspension to zero voice nodes/pods.
+    Agent-->>P: Complete spoken closing
+    Agent->>Q: Idempotent post-processing
+    Q->>AI: Gemini 3.7 typed recap
+    Q->>DB: Save recap + memory and mark COMPLETED
+    Web-->>Admin: History + transcript + recap
+    Web-->>P: Attended recap
+    Note over Web,Runtime: 30 idle minutes + no active meeting suspends voice to zero nodes/pods

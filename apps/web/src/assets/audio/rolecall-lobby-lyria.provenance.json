@@ -1,0 +1,20 @@
+{
+  "asset": "rolecall-lobby-lyria.mp3",
+  "generatedAt": "2026-08-31T14:42:52+00:00",
+  "generator": "Google Vertex AI Lyria",
+  "model": "lyria-3-pro-preview",
+  "location": "global",
+  "prompt": "Instrumental only. Warm, optimistic ambient electronic music for people waiting to join a professional AI-facilitated meeting. Soft synth pads, gentle marimba or plucked textures, light organic percussion, around 92 BPM, steady low intensity, no vocals, no dramatic drops, no abrupt ending, unobtrusive and loop-friendly, around three minutes.",
+  "mimeType": "audio/mpeg",
+  "estimatedGenerationCostUsd": 0.08,
+  "durationSeconds": 175.778,
+  "sampleRateHz": 44100,
+  "bitRate": 192348,
+  "sha256": "079e8a821b8cdcf0e69b06ce15156e7f15ae710ba8b55269bee11dc091923539",
+  "runtimeCalls": 0,
+  "dataBoundaryNote": "Only this fixed, non-personal prompt was sent to Lyria's global endpoint once. No participant, room, transcript, document, or meeting data was sent.",
+  "documentation": [
+    "https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/lyria/lyria-3",
+    "https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/music/generate-music"
+  ]
+}

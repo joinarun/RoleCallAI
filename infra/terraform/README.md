@@ -47,6 +47,10 @@ acceptance evidence are recorded in
 intentional reversible drift, wake the voice plane before generating a normal
 Terraform convergence plan.
 
+The Lyria lobby soundtrack adds no Terraform resource or runtime API call. It
+is generated once behind a separate cost guard and bundled into the control
+image. See [`docs/LYRIA.md`](../../docs/LYRIA.md).
+
 Start from the committed template:
 
 ```bash

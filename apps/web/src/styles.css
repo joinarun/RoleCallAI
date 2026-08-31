@@ -388,6 +388,13 @@ select { appearance: none; background-image: linear-gradient(45deg, transparent 
 .lobby-progress { position: relative; z-index: 2; min-width: min(360px, 100%); margin-top: 1.5rem; border: 1px solid var(--border); border-radius: 13px; padding: 1rem; background: rgba(7,10,28,.6); }
 .lobby-progress div { font-size: 1.2rem; font-weight: 800; }
 .lobby-progress span { display: block; margin: .3rem 0 .9rem; color: var(--subtle); font-size: .68rem; }
+.lobby-progress .lobby-music { display: flex; align-items: center; justify-content: space-between; gap: .7rem; margin: .8rem 0 .9rem; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); padding: .65rem 0; font-size: inherit; font-weight: inherit; }
+.lobby-progress .lobby-music > span { display: inline-flex; align-items: center; gap: .38rem; margin: 0; text-align: left; }
+.lobby-progress .lobby-music > span svg { width: 14px; color: var(--mint); }
+.lobby-music button { display: inline-flex; flex: 0 0 auto; align-items: center; gap: .3rem; border: 1px solid rgba(154,146,255,.28); border-radius: 8px; padding: .38rem .5rem; color: #dce0f4; background: rgba(124,114,255,.08); cursor: pointer; font: inherit; font-size: .62rem; font-weight: 750; }
+.lobby-music button:hover:not(:disabled) { border-color: rgba(100,230,189,.4); color: var(--mint); }
+.lobby-music button:disabled { cursor: not-allowed; opacity: .55; }
+.lobby-music button svg { width: 13px; }
 .processing-note { position: relative; z-index: 2; display: flex; align-items: center; gap: .6rem; margin-top: 1.2rem; color: var(--muted); }
 .caption-panel { min-width: 0; }
 .caption-stream { height: calc(100% - 2rem); max-height: 540px; overflow: auto; padding-right: .3rem; scrollbar-color: rgba(154,146,255,.25) transparent; }
@@ -560,6 +567,7 @@ select { appearance: none; background-image: linear-gradient(45deg, transparent 
   .meeting-grid { min-height: auto; display: flex; flex-direction: column; border-radius: 15px; }
   .agent-stage { min-height: 390px; order: 1; padding: 1.5rem 1rem; }
   .voice-orb { width: 190px; margin-bottom: 1.2rem; }
+  .lobby-progress .lobby-music { align-items: flex-start; flex-direction: column; }
   .roster-panel { order: 2; border-top: 1px solid var(--border); border-right: 0; }
   .roster-list { display: grid; grid-template-columns: 1fr 1fr; gap: .3rem; }
   .roster-person { min-width: 0; margin: 0; }

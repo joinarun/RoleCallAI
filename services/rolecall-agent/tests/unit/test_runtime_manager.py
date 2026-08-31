@@ -15,9 +15,7 @@ from app.runtime_manager import (
 def test_existing_runtime_guards_are_patched_without_resource_versions() -> None:
     autoscaling = Mock()
     policy = Mock()
-    autoscaling.create_namespaced_horizontal_pod_autoscaler.side_effect = ApiException(
-        status=409
-    )
+    autoscaling.create_namespaced_horizontal_pod_autoscaler.side_effect = ApiException(status=409)
     policy.create_namespaced_pod_disruption_budget.side_effect = ApiException(status=409)
 
     _restore_runtime_guards(

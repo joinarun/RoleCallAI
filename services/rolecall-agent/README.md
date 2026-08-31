@@ -32,6 +32,10 @@ Cloud Memory Bank acceptance and model-based agent evaluation are opt-in and
 must run only after the deployment approval gate. See
 `tests/eval/datasets/README.md` for the exact regional commands.
 
+The repository's Lyria generator is an offline maintenance tool, not an ADK
+runtime dependency. Its dry-run and cost-boundary tests are in the unit suite;
+the generated MP3 is served by React and never enters the RTC audio bridge.
+
 ## Runtime entry points
 
 - `app.fast_api_app:app`: same-origin SPA/API control plane.

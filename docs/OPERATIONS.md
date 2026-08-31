@@ -22,6 +22,10 @@ The currently deployed revisions and acceptance evidence are recorded in
 Participants cannot wake the runtime. A valid seat link receives the typed
 `runtime_asleep` response until an admin wakes it.
 
+Lobby music does not wake or keep the runtime alive. It is a static same-origin
+MP3 played only after a successful participant join; passive playback does not
+write activity. See [LYRIA.md](LYRIA.md).
+
 ## Conservative READY profile
 
 The hackathon profile keeps the same models, audio path, worker limits, two warm

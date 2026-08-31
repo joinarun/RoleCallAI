@@ -11,25 +11,26 @@ processing and product data use `europe-west4`; the voice cluster is zonal in
 
 | Component | Deployed release |
 | --- | --- |
-| Web/control plane | Cloud Run revision `rolecall-dev-control-00019-rnl`; 1 vCPU / 1 GiB limit; existing application image |
+| Web/control plane | Cloud Run revision `rolecall-dev-control-00020-q5x`; 1 vCPU / 1 GiB limit; image `control:hackathon-lyria-20260831` |
 | Async/index/post-process API | Cloud Run revision `rolecall-dev-jobs-00019-r2s`; 1 vCPU / 4 GiB limit; existing application image |
 | ADK voice worker | Artifact Registry tag `secure-rag-sleep-20260831-fix3` |
 | Sleep/wake lifecycle jobs | Artifact Registry jobs tag `hackathon-rightsize-runtime-20260831` |
 | Public application | `https://rolecall-dev-control-2502669067.europe-west4.run.app/` |
-| Repository release record | GitHub `main`, including the conservative hackathon sizing release |
+| Repository release record | GitHub `main`, including the reproducible-testing, specification, diagrams and lobby-music release |
 
-The executable images include the secure-admin, Firestore-vector RAG,
-KMS-backed participant-link recovery, deterministic floor controller and
-automatic runtime sleep/wake implementation. Commits after the image build add
-only deployed acceptance harnesses and this release documentation, so another
-container rollout is unnecessary until application or infrastructure source
-changes.
+The control image includes secure administration, Firestore-vector RAG,
+KMS-backed participant-link recovery, the deterministic meeting controller and
+the checked-in Lyria lobby track. The jobs and worker images built under the
+same immutable tag but were not rolled out because this release does not change
+their runtime behavior. Commits after the image build add only this verified
+release record, so another container rollout is unnecessary until application
+or infrastructure source changes.
 
 ## Current runtime shape
 
 The environment is deliberately returned to `SLEEPING` after acceptance:
 
-- durable runtime generation `11`, progress `100`, with no transition error;
+- durable runtime generation `13`, progress `100`, with no transition error;
 - GKE media and worker managed instance groups both have target size `0`;
 - LiveKit, Redis, ADK workers, cert-manager and both ingress controllers have
   zero replicas;
@@ -65,9 +66,9 @@ Previous management and participant links no longer authorize access.
 
 | Area | Result |
 | --- | --- |
-| Backend | 88 tests passed; 2 intentionally skipped |
-| Web | 7 tests passed; ESLint, TypeScript and production build passed |
-| Terraform | Formatting and validation passed; reviewed plans applied with 0 creates and 0 destroys |
+| Backend | 96 tests passed; 2 intentionally skipped |
+| Web | 11 Vitest tests passed; 10 Playwright desktop/mobile scenarios passed and the opt-in LiveKit scenario was skipped; ESLint, TypeScript and production build passed |
+| Terraform | Initialization and validation passed; this application-only rollout required no infrastructure apply |
 | Authentication | Unauthenticated admin APIs return 401; Argon2id sessions, CSRF, throttling, reCAPTCHA configuration and credential rotation passed |
 | Voice | Reduced-hardware Gemini Live smoke heard both speakers, answered after participant two and spoke an eight-sentence closing; recap processing completed in 18.45 seconds |
 | Sleep/wake | A deployed wake produced exactly 1 media + 2 worker nodes; the following suspend observed both pools at zero before committing generation 11 to `SLEEPING` |
@@ -77,6 +78,8 @@ Previous management and participant links no longer authorize access.
 | Sleep/wake | End-to-end wake passed; automatic suspend reached zero nodes and removed public media load balancers |
 | Sleeping boundary | A valid participant reached the lobby but received `runtime_asleep`, created no occurrence and did not wake the runtime |
 | Security | No deployed credentials, JWTs, cookies, document excerpts, personal email addresses or real capability tokens were found in tracked source or sampled Cloud logs |
+| Lyria lobby media | One fixed, non-personal Lyria 3 Pro request produced a 175.778-second, 4.23 MB MP3 for an estimated `$0.08`; the deployed byte hash matches source, Chromium decodes it, and runtime music calls remain zero |
+| Deployed control smoke | `/readyz` passed; the unauthenticated admin boundary returned 401; reCAPTCHA was configured; desktop/mobile login rendered without horizontal overflow; runtime stayed `SLEEPING` with both node groups at zero |
 
 The managed evaluation run also exceeded the required 0.8 quality threshold,
 but four managed-judge capacity errors occurred. The prescribed evaluator using

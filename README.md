@@ -1,31 +1,144 @@
 # RoleCallAI
 
-RoleCallAI is a browser-based, voice-only meeting room led by a configurable Google ADK agent. The deterministic meeting controller owns the clock, lifecycle, turn order, and LiveKit publish permissions; Gemini supplies the facilitator's language and judgment.
+**Let AI lead the conversation forward.**
 
-The UI provides twelve built-in facilitator roles plus Custom, participant leave
-controls, admin/delegated end-for-everyone controls, a remembered microphone
-check, shared-admin authentication, document-grounded RAG and automatic voice
-infrastructure sleep/wake.
+RoleCallAI is a browser-based, voice-only meeting room led by a configurable
+Google ADK facilitator. It runs stand-ups, retrospectives, brainstorming,
+workshops, interviews, incident calls, games, and custom formats while a
+deterministic controller—not the model—owns the clock, floor, microphone
+permissions, and lifecycle.
 
-This repository is the Phase 1 development monorepo. It contains:
+[Try the hosted application](https://rolecall-dev-control-2502669067.europe-west4.run.app/)
+· [Architecture](docs/ARCHITECTURE.md)
+· [Four-minute demo guide](docs/HACKATHON.md)
+· [Reproducible testing](docs/REPRODUCIBLE_TESTING.md)
+· [Self-hosting](docs/SELF_HOSTING.md)
 
-- `apps/web` — React/Vite/TypeScript admin and participant UI.
-- `services/rolecall-agent` — FastAPI control plane, ADK live agent, LiveKit RTC worker, postprocessor, and cleanup worker.
-- `infra/terraform` — Google Cloud development infrastructure for `europe-west4`.
-- `infra/kubernetes` — LiveKit and worker Kubernetes configuration used by Terraform/Helm.
-- `apps/web/e2e` and `scripts/load` — browser and synthetic-media acceptance harnesses.
+## Why it is agentic
+
+- **Acts, not just chats:** the ADK agent opens the meeting, calls on each
+  participant, asks role-specific follow-ups, records outcomes, and closes on
+  time through validated server tools.
+- **Controls a real-time environment:** LiveKit publish permission is granted
+  only to the current speaker, so a modified browser cannot bypass the floor.
+- **Remembers responsibly:** completed recaps and stable-seat facts give later
+  meetings continuity without retaining raw audio.
+- **Grounds responses:** optional room documents are chunked and embedded with
+  `gemini-embedding-001`; `search_room_docs()` performs room- and
+  occurrence-scoped Firestore vector retrieval with participant-visible
+  citations.
+- **Uses native voice:** Gemini Live receives bounded PCM audio and returns
+  natural speech plus finalized captions.
+- **Adds a human touch:** one warm lobby soundtrack was generated with Google
+  Lyria 3 Pro and is served as a static asset—no per-meeting music generation.
+
+## Reproducible testing
+
+### 1. Test the already-hosted Google Cloud application
+
+The public application is:
+
+<https://rolecall-dev-control-2502669067.europe-west4.run.app/>
+
+Hackathon judges receive the shared admin username and password privately
+through Devpost. Credentials are deliberately not committed to this repository.
+Other reviewers can request temporary access through
+[GitHub](https://github.com/joinarun/RoleCallAI) or
+[X/Twitter](https://x.com/aforarun2001).
+
+1. Open the URL, enter the supplied admin credential, and complete reCAPTCHA.
+2. If the dashboard says `SLEEPING`, select **Wake voice services**. The page
+   remains available while the costly voice plane sleeps; allow up to 10–20
+   minutes for a cold wake.
+3. Select **Create room**, choose a role, participant count, duration, agent
+   name, and instructions. A document upload is optional.
+4. Open the room, reveal its seat links, and copy one unique link per person.
+5. Open each link in a separate browser profile/device, enter the participant
+   name, accept the retention/processing consent, and enter the voice room.
+6. The Lyria-generated lobby music starts softly after the join interaction.
+   A visible Play/Mute control handles browser autoplay preferences. It fades
+   out before Gemini or a participant takes the floor.
+7. Join all expected seats for automatic start, or use the two-minute grace
+   start. Speak only when the UI grants your floor. Watch finalized captions,
+   citations, and the completed recap.
+8. Leave the deployment idle when finished; the voice nodes and media load
+   balancers automatically suspend after 30 minutes without genuine activity.
+
+Exact expected results and troubleshooting are in
+[docs/REPRODUCIBLE_TESTING.md](docs/REPRODUCIBLE_TESTING.md).
+
+### 2. Deploy and test in your own Google Cloud project
+
+Prerequisites are Node.js 22+, `uv`, Docker, Google Cloud CLI, Terraform,
+`kubectl`, Helm, and a billed Google Cloud project. The stack is intentionally
+custom because LiveKit requires GKE Standard host networking and public media
+nodes.
+
+```bash
+gcloud auth login
+gcloud auth application-default login
+cp infra/terraform/vars/dev.tfvars.example infra/terraform/vars/dev.tfvars
+cp .rolecall.local.env.example .rolecall.local.env
+make install
+make test
+make lint
+make build
+make eval-validate
+make terraform-validate
+make terraform-plan
+./scripts/terraform-inventory.sh
+```
+
+Review the saved Terraform plan, resource inventory, and
+[cost estimate](infra/terraform/COST_ESTIMATE.md) before any apply. Then follow
+the approval-gated procedure in [docs/SELF_HOSTING.md](docs/SELF_HOSTING.md).
+It creates only named Firestore database `rolecall-dev`; lifecycle scripts
+refuse to operate on an unrelated `(default)` database.
+
+Lyria is **not** required to redeploy the checked-in application. The generated
+MP3 and non-secret provenance are versioned. Maintainers who intentionally
+replace it must use the one-request cost guard in [docs/LYRIA.md](docs/LYRIA.md).
+
+## Technology
+
+| Layer | Technology |
+| --- | --- |
+| Web | React 19, Vite 7, TypeScript, Playwright, Vitest |
+| API/control | Python 3.11+, FastAPI, Pydantic |
+| Agent | Google ADK 2.x, `Runner.run_live()`, ADK Workflow |
+| Voice | Gemini Live native audio, LiveKit WebRTC, GKE Standard |
+| Recap/evaluation | Gemini 3.7 Flash on the EU endpoint |
+| RAG | Cloud Storage, `gemini-embedding-001`, Firestore vector search |
+| Memory | Agent Platform Memory Bank plus deterministic previous recap |
+| Music | Lyria 3 Pro Preview, generated once from a fixed global prompt |
+| Security | Argon2id, reCAPTCHA Enterprise, Secret Manager, Cloud KMS |
+| Operations | Terraform, Cloud Build, Cloud Run, Pub/Sub, Scheduler, Monitoring |
+
+## Repository map
+
+```text
+apps/web/                    React admin and participant application
+services/rolecall-agent/     FastAPI, ADK, RTC bridge, retrieval and jobs
+infra/terraform/             Google Cloud infrastructure as code
+infra/kubernetes/            LiveKit, Redis, ingress and worker Helm charts
+scripts/                     Lifecycle, migration, media and load tools
+docs/                        Architecture, flows, operations and public specs
+docs/specs/                  Requirement and traceability documents for SDD
+```
+
+Start at [docs/README.md](docs/README.md) for the documentation index.
 
 ## Local development
 
-Prerequisites: Node.js 22+, `uv`, Docker, and (for full voice testing) a local LiveKit server.
-
 ```bash
 make install
-make dev-api
-make dev-web
+make dev-api   # terminal 1
+make dev-web   # terminal 2
 ```
 
-The API defaults to an in-memory repository in local mode. Set `ROLECALL_REPOSITORY=firestore` and run the Firestore emulator for persistence-oriented integration tests. See [.env.example](.env.example).
+The API uses an in-memory repository by default. Local LiveKit and Redis are in
+`docker-compose.yml`; Firestore emulator guidance is in the reproducible test
+guide.
 
 ```bash
 make test
@@ -35,81 +148,33 @@ make test-e2e
 make eval-validate
 ```
 
-`npm run capture:previews` in `apps/web` captures reproducible desktop and mobile UI previews while the local API and Vite server are running. The real LiveKit browser test is opt-in with `npm run test:e2e:live` because it starts Redis and LiveKit through Docker.
+## Specification-driven development
 
-## Deployment boundary
+The approved implementation contract is [.agents-cli-spec.md](.agents-cli-spec.md).
+Public, testable requirements live in
+[docs/specs/rolecallai-v1.md](docs/specs/rolecallai-v1.md), and
+[docs/specs/traceability.md](docs/specs/traceability.md) maps each requirement
+to code and evidence. New work should update the requirement, acceptance
+criteria, implementation, tests, and traceability row in the same change.
 
-Terraform targets the Google Cloud project supplied in the ignored
-`infra/terraform/vars/dev.tfvars`, region `europe-west4`, and named Firestore
-database `rolecall-dev`. It does not reference the existing `(default)`
-Firestore database.
+## Security, privacy, and cost defaults
 
-Do not run `terraform apply` or deploy images without explicit approval after
-reviewing the generated plan, resource inventory, and cost estimate. This
-development deployment uses manual Cloud Build rather than a CI/CD pipeline.
+- Admin access uses a versioned Argon2id credential, reCAPTCHA risk assessment,
+  durable throttling, Origin/CSRF validation, and an eight-hour HttpOnly session.
+- Participant URL fragments are secret capabilities; only SHA-256 digests and
+  KMS ciphertext are stored.
+- Browsers never access Firestore, GCS, KMS, Memory Bank, or Gemini directly.
+- Raw audio is bounded and memory-only; LiveKit egress recording is disabled.
+- Finalized transcripts, recaps, citations, document versions, vectors, and
+  memory expire after 90 days.
+- Product data and meeting processing stay in Europe. The sole exception is the
+  one-time Lyria request documented above; it contained no user or meeting data.
+- After 30 idle minutes, GKE reaches zero nodes/pods and LiveKit/TURN public load
+  balancers are removed. The GKE control plane, reserved IPs, and durable
+  storage remain billable; see the [cost estimate](infra/terraform/COST_ESTIMATE.md).
 
-## Development deployment
+## Hackathon evidence
 
-Copy the sanitized configuration templates before planning or operating a cloud
-environment. Both destination files are ignored by Git:
-
-```bash
-cp infra/terraform/vars/dev.tfvars.example infra/terraform/vars/dev.tfvars
-cp .rolecall.local.env.example .rolecall.local.env
-```
-
-Set the project, ACME contact, and generated deployment endpoints locally. The
-current run-rate model is in
-[`infra/terraform/COST_ESTIMATE.md`](infra/terraform/COST_ESTIMATE.md).
-
-Project diagrams and the cost-saving runtime controls are documented here:
-
-- [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) — current deployed revisions,
-  migration result, runtime state, and acceptance evidence.
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — Google services, topology,
-  node counts, pod counts, and scale limits.
-- [`docs/FLOW.md`](docs/FLOW.md) — normal room and meeting sequence.
-- [`docs/OPERATIONS.md`](docs/OPERATIONS.md) — guarded suspend/resume runbook.
-- [`docs/FULL_TEARDOWN.md`](docs/FULL_TEARDOWN.md) — permanent teardown and
-  complete recreation runbook.
-
-```bash
-make runtime-status
-./scripts/dev-runtime.sh down --dry-run --yes
-make runtime-down
-make runtime-up
-```
-
-For a near-zero-cost, irreversible teardown of the RoleCallAI environment, use
-the separately guarded full-environment workflow. It deletes all Terraform-managed
-RoleCallAI resources and data, while preserving the project's unrelated
-`(default)` Firestore database:
-
-```bash
-make environment-status
-./scripts/full-environment.sh destroy --dry-run
-make environment-destroy
-make environment-create
-```
-
-Read [`docs/FULL_TEARDOWN.md`](docs/FULL_TEARDOWN.md) before running either
-mutating command. Destroyed rooms, links, history, and memory cannot be restored
-by `environment-create`.
-
-## Security and privacy defaults
-
-- The admin dashboard requires a versioned Argon2id shared credential,
-  reCAPTCHA risk assessment, throttling, Origin/CSRF checks and an eight-hour
-  Secure, HttpOnly session.
-- Participant capability tokens live in URL fragments and are exchanged for a
-  separate Secure, HttpOnly cookie.
-- Seat verification uses SHA-256 digests; KMS ciphertext permits explicit
-  authenticated dashboard recovery without automatically decrypting room lists.
-- Raw meeting audio is memory-only and LiveKit egress is disabled.
-- Final transcript segments, documents/chunks, recaps and curated meeting memory
-  expire after 90 days.
-- Document retrieval is a server-scoped ADK tool, filtered to the room and the
-  occurrence's frozen ready versions. Retrieved text is treated as untrusted evidence.
-- After 30 minutes without genuine activity, GKE voice nodes/pods and LiveKit/TURN
-  load balancers scale to zero; only an authenticated admin can wake them.
-- GenAI message-content telemetry is disabled.
+RoleCallAI targets the **Collaborative Partner** category. The submission map,
+official-rule checklist, demo timing, model inventory, and honest limitations
+are collected in [docs/HACKATHON.md](docs/HACKATHON.md).

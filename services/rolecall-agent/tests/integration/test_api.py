@@ -91,6 +91,21 @@ def test_login_requires_origin_and_csrf_protects_mutations(container: Container)
         )
 
 
+def test_local_admin_cors_preflight_does_not_require_a_session(container: Container) -> None:
+    with TestClient(app, base_url=BASE_URL) as client:
+        app.state.container = container
+        response = client.options(
+            "/v1/admin/rooms",
+            headers={
+                "Origin": "http://127.0.0.1:5173",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "content-type,x-csrf-token",
+            },
+        )
+        assert response.status_code == 200
+        assert response.headers["access-control-allow-origin"] == "http://127.0.0.1:5173"
+
+
 def test_failed_capability_exchange_uses_durable_throttle(container: Container) -> None:
     with TestClient(app, base_url=BASE_URL) as client:
         app.state.container = container

@@ -75,6 +75,13 @@ additional nodes exist.
 
 ## AI and document usage
 
+### Lobby music
+
+The checked-in lobby soundtrack used one approved Lyria 3 Pro Preview request,
+estimated at **$0.08 total**. It is a static 4.23 MB MP3 in the web image, so
+there are no runtime Lyria calls. Normal Cloud Run/internet transfer for the
+asset still applies, and browser caching reduces repeated transfer.
+
 ### Voice meetings
 
 The existing meeting model assumes standard Gemini 2.5 Flash Live rates, about
