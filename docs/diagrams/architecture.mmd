@@ -20,10 +20,10 @@ flowchart TB
       subgraph Voice[Voice plane - SLEEPING or READY]
         LB[Signaling + TURN load balancers<br/>absent while sleeping]
         subgraph GKE[GKE Standard - europe-west4-a]
-          MEDIA[Media pool<br/>0 / 1 / 3 nodes]
-          WORKERS[Worker pool<br/>0 / 2 / 6 nodes]
+          MEDIA[Media pool - e2-standard-2<br/>0 / 1 / 3 nodes]
+          WORKERS[Worker pool - e2-standard-2<br/>0 / 2 / 6 nodes]
           LK[LiveKit<br/>0 or 1-3 pods]
-          ADK[Google ADK workers<br/>0 or 2-6 pods]
+          ADK[Google ADK workers<br/>0 or 2-6 pods<br/>2 CPU / 4 GiB limits]
           REDIS[(Ephemeral Redis<br/>0 or 1 pod)]
           EDGE[Ingress + cert-manager<br/>0 or 5 pods]
         end

@@ -132,7 +132,7 @@ resource "google_container_node_pool" "media" {
   }
 
   node_config {
-    machine_type    = "e2-standard-4"
+    machine_type    = var.media_machine_type
     disk_type       = "pd-balanced"
     disk_size_gb    = 50
     image_type      = "COS_CONTAINERD"
@@ -184,7 +184,7 @@ resource "google_container_node_pool" "workers" {
   }
 
   node_config {
-    machine_type    = "e2-standard-4"
+    machine_type    = var.worker_machine_type
     disk_type       = "pd-balanced"
     disk_size_gb    = 50
     image_type      = "COS_CONTAINERD"

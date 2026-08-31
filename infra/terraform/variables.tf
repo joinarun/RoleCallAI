@@ -51,6 +51,12 @@ variable "image_tag" {
   default     = "manual"
 }
 
+variable "runtime_job_image_tag" {
+  description = "Optional jobs image tag used only by the sleep/wake lifecycle jobs."
+  type        = string
+  default     = ""
+}
+
 variable "acme_email" {
   description = "Email for Let's Encrypt registration; replace the placeholder before apply."
   type        = string
@@ -99,9 +105,27 @@ variable "worker_max_replicas" {
   default = 6
 }
 
+variable "worker_request_cpu" {
+  description = "Kubernetes scheduling CPU request per ADK worker; limits remain unchanged."
+  type        = string
+  default     = "250m"
+}
+
+variable "worker_request_memory" {
+  description = "Kubernetes scheduling memory request per ADK worker; limits remain unchanged."
+  type        = string
+  default     = "2Gi"
+}
+
 variable "media_min_nodes" {
   type    = number
   default = 1
+}
+
+variable "media_machine_type" {
+  description = "Compute Engine machine type for LiveKit media nodes."
+  type        = string
+  default     = "e2-standard-2"
 }
 
 variable "media_max_nodes" {
@@ -112,6 +136,12 @@ variable "media_max_nodes" {
 variable "worker_min_nodes" {
   type    = number
   default = 2
+}
+
+variable "worker_machine_type" {
+  description = "Compute Engine machine type for ADK worker and platform nodes."
+  type        = string
+  default     = "e2-standard-2"
 }
 
 variable "worker_max_nodes" {

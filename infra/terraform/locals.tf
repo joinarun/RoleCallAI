@@ -17,9 +17,10 @@ locals {
     jobs    = "${local.artifact_host}/${var.project_id}/${local.artifact_repo}/jobs:${var.image_tag}"
     worker  = "${local.artifact_host}/${var.project_id}/${local.artifact_repo}/worker:${var.image_tag}"
   }
-  livekit_hostname = "livekit.${replace(google_compute_address.livekit_signaling.address, ".", "-")}.sslip.io"
-  turn_hostname    = "turn.${replace(google_compute_address.livekit_turn.address, ".", "-")}.sslip.io"
-  livekit_url      = "wss://${local.livekit_hostname}"
+  runtime_job_image = "${local.artifact_host}/${var.project_id}/${local.artifact_repo}/jobs:${var.runtime_job_image_tag != "" ? var.runtime_job_image_tag : var.image_tag}"
+  livekit_hostname  = "livekit.${replace(google_compute_address.livekit_signaling.address, ".", "-")}.sslip.io"
+  turn_hostname     = "turn.${replace(google_compute_address.livekit_turn.address, ".", "-")}.sslip.io"
+  livekit_url       = "wss://${local.livekit_hostname}"
   common_env = {
     ROLECALL_ENV                                       = "dev"
     ROLECALL_PROJECT_ID                                = var.project_id

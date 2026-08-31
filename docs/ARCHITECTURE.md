@@ -34,8 +34,8 @@ flowchart TB
       subgraph Voice[Voice plane - SLEEPING or READY]
         LB[Signaling + TURN load balancers<br/>absent while sleeping]
         subgraph GKE[GKE Standard - europe-west4-a]
-          MEDIA[Media pool<br/>0 sleeping / 1 running / 3 max nodes]
-          WORKERS[Worker pool<br/>0 sleeping / 2 running / 6 max nodes]
+          MEDIA[Media pool - e2-standard-2<br/>0 sleeping / 1 running / 3 max nodes]
+          WORKERS[Worker pool - e2-standard-2<br/>0 sleeping / 2 running / 6 max nodes]
           LK[LiveKit<br/>0 or 1-3 pods]
           ADK[Google ADK RTC workers<br/>0 or 2-6 pods]
           REDIS[(Ephemeral Redis<br/>0 or 1 pod)]
@@ -89,17 +89,21 @@ flowchart TB
 | Cloud Run web/control | 0 idle instances; starts on request | demand-based | 10 |
 | Cloud Run async API | 0 idle instances | demand-based | 10 |
 | Cloud Run runtime jobs | 0 | 0 except during transition | 1 task per job |
-| GKE media nodes | 0 | 1 `e2-standard-4` | 3 |
-| GKE worker nodes | 0 | 2 `e2-standard-4` | 6 |
+| GKE media nodes | 0 | 1 `e2-standard-2` | 3 |
+| GKE worker nodes | 0 | 2 `e2-standard-2` | 6 |
 | LiveKit pods | 0 | 1 | 3 |
-| ADK voice-worker pods | 0 | 2 | 6 |
+| ADK voice-worker pods | 0 | 2 at 250m CPU / 2 GiB requests | 6 |
 | Ephemeral Redis pods | 0 | 1 | 1 |
 | Ingress and cert-manager pods | 0 | 5 | 5 |
 | Repository-managed GKE pods | **0** | **9** | **15** |
 | Signaling/TURN load-balancer services | 0 | 2 services / 3 forwarding rules | fixed |
 
 GKE system DaemonSets and control-plane components are not included in the pod
-count. The normal running shape is three nodes and nine repository-managed pods.
+count. The normal running shape is three `e2-standard-2` nodes (6 vCPU and
+24 GiB total) and nine repository-managed pods. Each worker retains its 2 vCPU /
+4 GiB limit and 2 GiB memory request; only its CPU scheduling request is reduced
+so the two minimum workers and GKE system services fit safely on two worker
+nodes.
 The sleeping shape retains the zonal GKE control plane but has zero nodes, zero
 voice pods, and no LiveKit/TURN load-balancer services.
 

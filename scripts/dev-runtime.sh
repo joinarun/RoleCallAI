@@ -19,9 +19,11 @@ readonly RUNTIME_CLUSTER="${ROLECALL_GKE_CLUSTER:-rolecall-dev}"
 readonly RUNTIME_DATABASE="${ROLECALL_FIRESTORE_DATABASE:-rolecall-dev}"
 readonly RUNTIME_WAKE_JOB="${ROLECALL_RUNTIME_WAKE_JOB:-${RUNTIME_CLUSTER}-runtime-wake}"
 readonly RUNTIME_SUSPEND_JOB="${ROLECALL_RUNTIME_SUSPEND_JOB:-${RUNTIME_CLUSTER}-runtime-suspend}"
+readonly RUNTIME_IDLE_SCHEDULER_JOB="${ROLECALL_RUNTIME_IDLE_SCHEDULER_JOB:-${RUNTIME_CLUSTER}-runtime-idle-check}"
 
 RUNTIME_DRY_RUN=false
 RUNTIME_ASSUME_YES=false
+RUNTIME_IDLE_SCHEDULER_WAS_ENABLED=false
 
 runtime_usage() {
   cat <<'EOF'
@@ -72,25 +74,61 @@ runtime_operation() {
   )
 }
 
+runtime_pause_idle_scheduler() {
+  local state
+  state="$(gcloud scheduler jobs describe "${RUNTIME_IDLE_SCHEDULER_JOB}" \
+    --project "${RUNTIME_PROJECT_ID}" --location "${RUNTIME_REGION}" \
+    --format='value(state)')"
+  if [[ "${state}" == "ENABLED" ]]; then
+    runtime_log "Pausing ${RUNTIME_IDLE_SCHEDULER_JOB} during the manual transition."
+    gcloud scheduler jobs pause "${RUNTIME_IDLE_SCHEDULER_JOB}" \
+      --project "${RUNTIME_PROJECT_ID}" --location "${RUNTIME_REGION}" --quiet
+    RUNTIME_IDLE_SCHEDULER_WAS_ENABLED=true
+  fi
+}
+
+runtime_resume_idle_scheduler() {
+  if [[ "${RUNTIME_IDLE_SCHEDULER_WAS_ENABLED}" == true ]]; then
+    runtime_log "Resuming ${RUNTIME_IDLE_SCHEDULER_JOB}."
+    gcloud scheduler jobs resume "${RUNTIME_IDLE_SCHEDULER_JOB}" \
+      --project "${RUNTIME_PROJECT_ID}" --location "${RUNTIME_REGION}" --quiet
+    RUNTIME_IDLE_SCHEDULER_WAS_ENABLED=false
+  fi
+}
+
 runtime_execute() {
-  local action="$1" job operation
+  local action="$1" job operation operation_status execution_status
   job="${RUNTIME_WAKE_JOB}"
   [[ "${action}" == "wake" ]] || job="${RUNTIME_SUSPEND_JOB}"
   if [[ "${RUNTIME_DRY_RUN}" == true ]]; then
-    runtime_log "Would create a guarded ${action} operation and execute Cloud Run Job ${job}."
+    runtime_log "Would pause ${RUNTIME_IDLE_SCHEDULER_JOB}, create a guarded ${action} operation, execute Cloud Run Job ${job}, then resume the Scheduler."
     return
   fi
+  runtime_pause_idle_scheduler
+  set +e
   operation="$(runtime_operation "${action}")"
+  operation_status=$?
+  set -e
+  if [[ ${operation_status} -ne 0 ]]; then
+    runtime_resume_idle_scheduler
+    return "${operation_status}"
+  fi
   if [[ "${operation}" == already:* ]]; then
     runtime_log "Runtime is ${operation#already:}; no transition is needed."
+    runtime_resume_idle_scheduler
     return
   fi
   runtime_log "Executing ${job}; this can take up to 20 minutes."
+  set +e
   gcloud run jobs execute "${job}" \
     --project "${RUNTIME_PROJECT_ID}" \
     --region "${RUNTIME_REGION}" \
     --update-env-vars "ROLECALL_RUNTIME_OPERATION_ID=${operation}" \
     --wait --quiet
+  execution_status=$?
+  set -e
+  runtime_resume_idle_scheduler
+  return "${execution_status}"
 }
 
 runtime_status() {

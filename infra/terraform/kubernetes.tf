@@ -297,8 +297,11 @@ resource "helm_release" "worker" {
       LIVEKIT_URL           = "ws://livekit-server.rolecall.svc.cluster.local:7880"
     })
     resources = {
-      requests = { cpu = "500m", memory = "2Gi" }
-      limits   = { cpu = "2", memory = "4Gi" }
+      requests = {
+        cpu    = var.worker_request_cpu
+        memory = var.worker_request_memory
+      }
+      limits = { cpu = "2", memory = "4Gi" }
     }
   })]
 

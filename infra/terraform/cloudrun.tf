@@ -47,8 +47,8 @@ resource "google_cloud_run_v2_service" "control" {
 
       resources {
         limits = {
-          cpu    = "2"
-          memory = "2Gi"
+          cpu    = "1"
+          memory = "1Gi"
         }
         cpu_idle          = true
         startup_cpu_boost = true
@@ -157,7 +157,7 @@ resource "google_cloud_run_v2_service" "jobs" {
 
       resources {
         limits = {
-          cpu    = "2"
+          cpu    = "1"
           memory = "4Gi"
         }
         cpu_idle          = true
@@ -243,7 +243,7 @@ resource "google_cloud_run_v2_job" "runtime" {
 
       containers {
         name    = "runtime-manager"
-        image   = local.images.jobs
+        image   = local.runtime_job_image
         command = ["/opt/rolecall-venv/bin/python", "-m", "app.runtime_manager"]
 
         dynamic "env" {

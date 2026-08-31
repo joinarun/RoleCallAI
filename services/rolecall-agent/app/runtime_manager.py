@@ -166,6 +166,33 @@ def _ready_node_count(core: client.CoreV1Api, pool: str) -> int:
     return count
 
 
+def _resize_pool_to_zero(settings, core: client.CoreV1Api, pool: str) -> None:  # type: ignore[no-untyped-def]
+    """Resize a pool to zero and verify the observed Kubernetes state.
+
+    A completed GKE setSize operation can occasionally precede the managed
+    instance group and Kubernetes node objects reaching the requested size.
+    Do not declare the runtime asleep until the pool has actually drained.
+    """
+    attempts = 2
+    for attempt in range(1, attempts + 1):
+        _set_pool_size(settings, pool, 0)
+        try:
+            _wait_until(
+                lambda: _ready_node_count(core, pool) == 0,
+                90,
+                f"GKE node pool {pool} did not drain to zero",
+            )
+            return
+        except TimeoutError:
+            if attempt == attempts:
+                raise
+            logger.warning(
+                "event=runtime_pool_resize_retry pool=%s target=0 attempt=%d",
+                pool,
+                attempt + 1,
+            )
+
+
 def _service_has_load_balancer(core: client.CoreV1Api, namespace: str, service_name: str) -> bool:
     service = core.read_namespaced_service_status(service_name, namespace)
     ingress = service.status.load_balancer.ingress or []
@@ -289,7 +316,7 @@ def suspend(operation_id: str) -> None:
     )
     for pool in (settings.gke_media_pool, settings.gke_worker_pool):
         _set_pool_autoscaling(settings, pool, False, 0, 0)
-        _set_pool_size(settings, pool, 0)
+        _resize_pool_to_zero(settings, core, pool)
         if not runtime.suspension_can_continue(operation_id):
             wake(operation_id)
             return

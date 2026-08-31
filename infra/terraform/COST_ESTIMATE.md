@@ -14,9 +14,9 @@ This is a planning estimate, not a billing quote.
 | --- | ---: |
 | Fully destroyed | Approximately **$0 RoleCallAI fixed runtime**; shared historical storage may remain |
 | Automatically sleeping | **$11–$85** plus low-volume storage/operations |
-| `READY` at minimum size for the entire month | **$371–$444** plus usage |
-| 100 × 30-minute meetings while otherwise sleeping | Roughly **$185–$260** total, depending on wake hours and model use |
-| Nine-node ceiling held for an entire month | **$1,067–$1,140** plus usage |
+| `READY` at minimum size for the entire month | **$206–$279** plus usage |
+| 100 × 30-minute meetings while otherwise sleeping | Roughly **$173–$248** total, depending on wake hours and model use |
+| Nine-node ceiling held for an entire month | **$574–$647** plus usage |
 
 The range is the zonal GKE management fee. Google lists $0.10 per cluster-hour
 ($73 for 730 hours) and a $74.40 monthly billing-account credit for one eligible
@@ -54,22 +54,22 @@ flat tier.
 ## Voice plane fixed infrastructure
 
 Minimum `READY` topology is one media node plus two worker nodes. Both pools use
-`e2-standard-4` with 50 GiB balanced boot disks. Redis is an ephemeral pod and
+`e2-standard-2` with 50 GiB balanced boot disks. Redis is an ephemeral pod and
 has no managed-service line item.
 
 | Resource | Full-month minimum calculation | Monthly |
 | --- | --- | ---: |
-| 3 × `e2-standard-4` | Existing Netherlands SKU rates × 730 h | $328.76 |
+| 3 × `e2-standard-2` | Existing Netherlands SKU rates × 730 h | $164.38 |
 | 3 × 50 GiB `pd-balanced` | 150 GiB × $0.11/GiB-month | $16.50 |
 | 3 regional forwarding rules | first five × $0.025/h × 730 | $18.25 |
 | Public Cloud NAT | 3 assigned VMs + one IP | $6.72 |
 | GKE management | $0.10/h × 730, less available credit | $0–$73.00 |
 | KMS and secrets | one key version + four secret versions | about $0.30 |
-| **Running fixed minimum** |  | **$370.53–$443.53** |
+| **Running fixed minimum** |  | **$206.15–$279.15** |
 
-At the nine-node ceiling, compute is about $986.28, disks $49.50, NAT fixed
+At the nine-node ceiling, compute is about $493.14, disks $49.50, NAT fixed
 charges $12.85 and forwarding rules $18.25. Including KMS/secrets and the
-possible GKE fee gives **$1,067–$1,140/month** before AI, network, storage,
+possible GKE fee gives **$574–$647/month** before AI, network, storage,
 database-operation and observability usage. Autoscaling charges only while the
 additional nodes exist.
 
@@ -116,13 +116,13 @@ low-volume serverless/data use:
 
 | Component | Approximate monthly amount |
 | --- | ---: |
-| Voice infrastructure for 60 hours | $30–$36, plus sleeping residual |
+| Voice infrastructure for 60 hours | $18–$24, plus sleeping residual |
 | Gemini Live | $160.00 |
 | Gemini recaps | $1.20 |
 | Document embeddings | $0.75 |
 | Firestore/GCS/Cloud Run/Pub/Sub/Memory/observability allowance | $10.00 |
 
-The resulting order-of-magnitude total is **$185–$260**, with most uncertainty
+The resulting order-of-magnitude total is **$173–$248**, with most uncertainty
 coming from the billing-account GKE credit, actual Live API context, how long the
 runtime remains awake, data transfer and logs. Set a billing budget/alerts;
 budgets notify but do not stop service consumption.

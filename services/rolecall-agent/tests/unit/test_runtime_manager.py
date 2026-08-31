@@ -5,7 +5,11 @@ from unittest.mock import Mock, patch
 
 from kubernetes.client.exceptions import ApiException
 
-from app.runtime_manager import _restore_runtime_guards, _set_pool_autoscaling
+from app.runtime_manager import (
+    _resize_pool_to_zero,
+    _restore_runtime_guards,
+    _set_pool_autoscaling,
+)
 
 
 def test_existing_runtime_guards_are_patched_without_resource_versions() -> None:
@@ -47,3 +51,21 @@ def test_zonal_node_pool_autoscaling_uses_the_supported_rest_action() -> None:
             }
         },
     )
+
+
+def test_pool_resize_retries_when_completed_operation_did_not_drain_nodes() -> None:
+    settings = SimpleNamespace()
+    core = Mock()
+
+    with (
+        patch("app.runtime_manager._set_pool_size") as set_pool_size,
+        patch(
+            "app.runtime_manager._wait_until",
+            side_effect=[TimeoutError("pool still has nodes"), None],
+        ) as wait_until,
+    ):
+        _resize_pool_to_zero(settings, core, "workers")
+
+    assert set_pool_size.call_count == 2
+    assert wait_until.call_count == 2
+    set_pool_size.assert_called_with(settings, "workers", 0)

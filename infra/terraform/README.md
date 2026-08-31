@@ -30,6 +30,17 @@ Secret Manager is the runtime source of truth. Keep state, saved plans and
 variable files local, encrypted, and uncommitted. Before apply, verify the ACME
 contact in `vars/dev.tfvars`.
 
+The committed conservative defaults use `e2-standard-2` for both node pools,
+250m CPU / 2 GiB ADK worker scheduling requests, and unchanged 2 vCPU / 4 GiB
+worker limits. Machine types and worker requests are explicit variables in the
+example tfvars so a later production profile can be raised without rewriting
+the Helm release.
+
+`runtime_job_image_tag` may be set independently when only the sleep/wake job
+implementation changes. Leaving it empty keeps the lifecycle jobs on
+`image_tag`; using a separate immutable tag avoids restarting the web, async or
+meeting-worker releases for an operations-only fix.
+
 The last applied release, live revision identifiers, migration counts and
 acceptance evidence are recorded in
 [`docs/DEPLOYMENT.md`](../../docs/DEPLOYMENT.md). Because runtime sleep creates

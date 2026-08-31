@@ -22,6 +22,22 @@ The currently deployed revisions and acceptance evidence are recorded in
 Participants cannot wake the runtime. A valid seat link receives the typed
 `runtime_asleep` response until an admin wakes it.
 
+## Conservative READY profile
+
+The hackathon profile keeps the same models, audio path, worker limits, two warm
+workers and autoscaling ceilings while reducing the minimum compute shape:
+
+- one `e2-standard-2` LiveKit media node;
+- two `e2-standard-2` platform/worker nodes;
+- two workers requested at 250m CPU and 2 GiB each, with unchanged 2 vCPU and
+  4 GiB limits;
+- Cloud Run control at 1 vCPU / 1 GiB and async jobs at 1 vCPU / 4 GiB.
+
+This is 6 vCPU and 24 GiB across the normal three-node GKE shape. HPA and node
+pool maxima remain six workers, three media nodes and six worker nodes. A
+rolling update can temporarily add nodes or pods; evaluate cost only after both
+autoscalers settle.
+
 ## Runtime states
 
 | State | Meaning |
@@ -80,7 +96,18 @@ make runtime-up
 
 `dev-runtime.sh` starts the corresponding Cloud Run Job and waits for the
 durable runtime state. It does not disable the web service, document pipeline,
-Scheduler or Pub/Sub. Operations are safe to retry after interruption.
+or Pub/Sub. It temporarily pauses only the idle-check Scheduler around a manual
+transition and always resumes it afterward, preventing an automatic duplicate
+operation. Operations are safe to retry after interruption.
+
+The suspend job independently verifies that each node pool has zero Ready nodes
+after GKE accepts the resize. It retries the resize once on a delayed drain and
+does not finalize `SLEEPING` if the observed pool state remains nonzero.
+
+For planned GKE/Terraform maintenance that may exceed a few minutes, pause
+`rolecall-dev-runtime-idle-check` before the apply and resume it immediately
+afterward. This prevents the five-minute idle check from launching suspension
+while nodes are rolling. Never leave the Scheduler job paused after maintenance.
 
 For a local emergency path that directly writes the guarded operation request,
 use `scripts/runtime-operation.py`; it is pinned to `rolecall-dev` and rejects

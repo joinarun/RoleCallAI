@@ -5,16 +5,21 @@ environment            = "dev"
 firestore_database     = "rolecall-dev"
 summary_model_location = "eu"
 image_tag              = "manual"
+runtime_job_image_tag  = ""
 
 # Use a monitored address. The configured dev.tfvars file is ignored by Git.
 acme_email         = "replace-before-apply@example.com"
 notification_email = ""
 
 control_min_instances = 0
+media_machine_type    = "e2-standard-2"
 media_min_nodes       = 1
 media_max_nodes       = 3
+worker_machine_type   = "e2-standard-2"
 worker_min_nodes      = 2
 worker_max_nodes      = 6
 worker_min_replicas   = 2
 worker_max_replicas   = 6
+worker_request_cpu    = "250m"
+worker_request_memory = "2Gi"
 retention_days        = 90
