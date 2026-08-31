@@ -14,6 +14,7 @@ permissions, and lifecycle.
 · [Reproducible testing](docs/REPRODUCIBLE_TESTING.md)
 · [Self-hosting](docs/SELF_HOSTING.md)
 
+[Demo available in YouTube Video](https://youtu.be/lUjKNMtc42U)
 ## Why it is agentic
 
 - **Acts, not just chats:** the ADK agent opens the meeting, calls on each
