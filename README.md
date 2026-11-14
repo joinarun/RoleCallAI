@@ -1,6 +1,6 @@
 # RoleCallAI
 
-**Let AI lead the conversation forward.**
+**A voice meeting facilitator with enforced turns, time limits, and actionable recaps.**
 
 RoleCallAI is a browser-based, voice-only meeting room led by a configurable
 Google ADK facilitator. It runs stand-ups, retrospectives, brainstorming,
@@ -14,7 +14,33 @@ permissions, and lifecycle.
 · [Reproducible testing](docs/REPRODUCIBLE_TESTING.md)
 · [Self-hosting](docs/SELF_HOSTING.md)
 
-[Demo available in YouTube Video](https://youtu.be/lUjKNMtc42U)
+[Watch the recorded demo](https://youtu.be/lUjKNMtc42U)
+
+## What this project demonstrates
+
+- **Real-time systems:** a deterministic meeting controller coordinates the
+  AI facilitator, participant turns, and server-enforced LiveKit permissions.
+- **Agent workflows:** Google ADK and Gemini Live handle facilitation, with
+  document retrieval, citations, recaps, and continuity between meetings.
+- **Cloud operations:** Terraform defines the Google Cloud stack; automated
+  checks, regional processing, and idle suspension are documented alongside
+  the application.
+
+## Current scope and review options
+
+The implementation supports English, voice-only meetings, role-based
+facilitation, optional room documents, captions, recaps, and meeting history.
+It is a hackathon application with one shared administrator; public signup,
+MFA, account recovery, and production tenancy are outside the current scope.
+Camera, screen sharing, and audio recording are also outside Phase 1.
+
+Start with the recorded demo and [architecture](docs/ARCHITECTURE.md) for an
+overview. The hosted application requires temporary access and its voice
+services may need a cold wake. Local deterministic tests use controlled
+dependencies and do not establish live model or public-network performance;
+see [reproducible testing](docs/REPRODUCIBLE_TESTING.md) and the
+[documented limitations](docs/HACKATHON.md#honest-limitations).
+
 ## Why it is agentic
 
 - **Acts, not just chats:** the ADK agent opens the meeting, calls on each
@@ -70,7 +96,7 @@ Exact expected results and troubleshooting are in
 
 ### 2. Deploy and test in your own Google Cloud project
 
-Prerequisites are Node.js 22+, `uv`, Docker, Google Cloud CLI, Terraform,
+Prerequisites are Node.js 22+, Python 3.11–3.13, `uv`, Docker, Google Cloud CLI, Terraform,
 `kubectl`, Helm, and a billed Google Cloud project. The stack is intentionally
 custom because LiveKit requires GKE Standard host networking and public media
 nodes.
